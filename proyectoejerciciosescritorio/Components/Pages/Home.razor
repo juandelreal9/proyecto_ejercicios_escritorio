@@ -1,0 +1,1318 @@
+@page "/"
+@using System.Globalization
+@using System.Text
+@using System.IO
+@using System.Diagnostics
+@using proyectoejerciciosescritorio.Application.Services.Pdf
+@inject AppDbContext DbContext
+@inject RoutineBuilderState RoutineState
+@inject ThemeService ThemeState
+@inject CommandKeyConfigService KeyConfig
+@inject PdfGeneratorService PdfService
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="desktop-shell">
+    @* Top Application Bar *@
+    <header class="desktop-topbar">
+        <div class="brand-group">
+            <div class="brand-logo">
+                <i class="bi bi-lightning-charge-fill"></i>
+            </div>
+            <div>
+                <h1 class="brand-title">Creador Rápido de Rutinas</h1>
+                <span class="brand-subtitle">Flujo acelerado por comandos de teclado (10–15 min)</span>
+            </div>
+        </div>
+
+        <div class="routine-title-box" title="Título que aparecerá en el documento PDF">
+            <i class="bi bi-file-earmark-medical-fill"></i>
+            <input type="text"
+                   class="routine-title-input"
+                   placeholder="Nombre de la rutina (ej: Hipertrofia Semana 1)..."
+                   @bind-value="pdfTitle"
+                   @bind-value:event="oninput" />
+        </div>
+
+        <div class="topbar-actions">
+            <button type="button"
+                    class="btn-create-routine @(RoutineState.IsRoutineStarted ? "started" : "pulse-cta")"
+                    @onclick="HandleCrearRutinaClick"
+                    title="Iniciar rutina en Día 1 y comenzar a escribir ejercicios">
+                <i class="bi bi-play-circle-fill"></i>
+                @(RoutineState.IsRoutineStarted ? "Reiniciar / Crear Rutina" : "Crear Rutina")
+            </button>
+
+            <button type="button"
+                    class="btn-toggle-catalog @(showKeySettingsModal ? "active" : "")"
+                    @onclick="OpenKeySettingsModal"
+                    title="Configurar las teclas para cada comando">
+                <i class="bi bi-gear-fill"></i>
+                Configuración
+            </button>
+
+            <button type="button"
+                    class="btn-toggle-catalog @(showCatalogSidebar ? "active" : "")"
+                    @onclick="() => showCatalogSidebar = !showCatalogSidebar"
+                    title="Mostrar u ocultar el catálogo completo y editor de ejercicios">
+                <i class="bi bi-collection-fill"></i>
+                Catálogo (@allExercises.Count)
+            </button>
+
+            <button type="button"
+                    class="btn-theme-toggle"
+                    @onclick="ToggleTheme"
+                    title="Alternar tema claro / oscuro">
+                <i class="bi @(ThemeState.IsDarkMode ? "bi-sun-fill" : "bi-moon-stars-fill")"></i>
+            </button>
+
+            <button type="button"
+                    class="btn-export-pdf"
+                    @onclick="OpenPdfModal"
+                    title="Generar y guardar PDF de la rutina">
+                <i class="bi bi-file-earmark-pdf-fill"></i> Exportar PDF
+            </button>
+        </div>
+    </header>
+
+    @* Command Bar HUD: Interactive Buttons + Keyboard Shortcuts *@
+    <section class="command-hud-bar">
+        <div class="hud-status-indicator">
+            <span class="status-dot @GetFlowStateCss()"></span>
+            <span class="status-label">@GetFlowStateTitle()</span>
+        </div>
+
+        <div class="command-buttons-group">
+            <button type="button"
+                    class="cmd-key-btn @(flowState == FlowState.TypingExercise ? "active-cmd" : "")"
+                    @onclick="ActivateExerciseCommand"
+                    title="Atajo actual para Ejercicio: @KeyConfig.ExerciseKey.Display">
+                <kbd class="key-cap">@KeyConfig.ExerciseKey.Display</kbd>
+                <span class="cmd-name"><i class="bi bi-lightning-charge-fill"></i> Ejercicio</span>
+            </button>
+
+            <button type="button"
+                    class="cmd-key-btn @(flowState == FlowState.TypingLabel ? "active-cmd" : "")"
+                    @onclick="ActivateLabelCommand"
+                    title="Atajo actual para Etiqueta: @KeyConfig.LabelKey.Display">
+                <kbd class="key-cap">@KeyConfig.LabelKey.Display</kbd>
+                <span class="cmd-name"><i class="bi bi-tag-fill"></i> Etiqueta</span>
+            </button>
+
+            <button type="button"
+                    class="cmd-key-btn"
+                    @onclick="ActivateNextDayCommand"
+                    title="Atajo actual para Siguiente Día: @KeyConfig.NextDayKey.Display">
+                <kbd class="key-cap">@KeyConfig.NextDayKey.Display</kbd>
+                <span class="cmd-name"><i class="bi bi-calendar-plus-fill"></i> Siguiente Día</span>
+            </button>
+
+            <button type="button"
+                    class="cmd-key-btn @(flowState == FlowState.TypingSeries || flowState == FlowState.TypingReps ? "active-cmd" : "")"
+                    @onclick="ActivateEnterCommand"
+                    title="Atajo actual para Selección: @KeyConfig.SelectKey.Display">
+                <kbd class="key-cap">@KeyConfig.SelectKey.Display</kbd>
+                <span class="cmd-name"><i class="bi bi-check2-circle"></i> Selección</span>
+            </button>
+
+            <button type="button"
+                    class="cmd-config-mini-btn"
+                    @onclick="OpenKeySettingsModal"
+                    title="Personalizar teclas de comandos">
+                <i class="bi bi-sliders"></i> Teclas
+            </button>
+        </div>
+    </section>
+
+    @* Main Desktop Workspace: Left = Command Console + Routine Days, Right = Exercise Catalog & Muscle Groups *@
+    <div class="desktop-workspace">
+        <div class="routine-builder-column">
+            @if (!RoutineState.IsRoutineStarted)
+            {
+                @* Initial Welcome / Fast Start Screen *@
+                <div class="welcome-start-card">
+                    <div class="welcome-icon-ring">
+                        <i class="bi bi-keyboard-fill"></i>
+                    </div>
+                    <h2>Optimiza la creación de tus rutinas semanales</h2>
+                    <p>
+                        Diseñado para escribir toda la rutina sin depender del mouse. Haz clic en
+                        <strong>Crear Rutina</strong> para abrir el <strong>Día 1</strong> y comenzar a escribir ejercicios al instante.
+                    </p>
+
+                    <div class="welcome-shortcuts-grid">
+                        <div class="shortcut-box">
+                            <kbd>@KeyConfig.ExerciseKey.Display</kbd>
+                            <span>Buscar e insertar <strong>Ejercicio</strong></span>
+                        </div>
+                        <div class="shortcut-box">
+                            <kbd>@KeyConfig.SelectKey.Display</kbd>
+                            <span><strong>Seleccionar</strong> ejercicio y confirmar series/reps</span>
+                        </div>
+                        <div class="shortcut-box">
+                            <kbd>@KeyConfig.LabelKey.Display</kbd>
+                            <span>Crear <strong>Etiqueta</strong> (ej. Superserie, Descanso)</span>
+                        </div>
+                        <div class="shortcut-box">
+                            <kbd>@KeyConfig.NextDayKey.Display</kbd>
+                            <span>Pasar al <strong>Siguiente Día</strong> (Día 2, Día 3...)</span>
+                        </div>
+                    </div>
+
+                    <div class="welcome-actions-row">
+                        <button type="button" class="btn-hero-start" @onclick="StartNewRoutineFlow">
+                            <i class="bi bi-play-fill"></i> Crear Rutina Ahora (Comenzar en Día 1)
+                        </button>
+                        <button type="button" class="btn-hero-config" @onclick="OpenKeySettingsModal">
+                            <i class="bi bi-gear-fill"></i> Configurar Teclas de Comandos
+                        </button>
+                    </div>
+                </div>
+            }
+            else
+            {
+                @* Active Command Console *@
+                <div class="active-command-console @GetFlowStateCss()">
+                    <div class="console-header-row">
+                        <div class="console-day-badge">
+                            <i class="bi bi-calendar-check-fill"></i>
+                            <span>Editando: <strong>@(RoutineState.ActiveDia?.Nombre ?? "Día 1")</strong></span>
+                        </div>
+                        <div class="console-step-breadcrumb">
+                            <span class="step-pill @(flowState == FlowState.TypingExercise ? "current" : "")">1. Ejercicio (@KeyConfig.ExerciseKey.Display)</span>
+                            <i class="bi bi-chevron-right"></i>
+                            <span class="step-pill @(flowState == FlowState.TypingSeries || flowState == FlowState.TypingReps ? "current" : "")">2. Series y Reps (@KeyConfig.SelectKey.Display)</span>
+                            <i class="bi bi-chevron-right"></i>
+                            <span class="step-pill @(flowState == FlowState.WaitingCommand ? "current" : "")">3. Siguiente Comando</span>
+                        </div>
+                    </div>
+
+                    @if (flowState == FlowState.TypingExercise)
+                    {
+                        <div class="console-exercise-search">
+                            <div class="search-input-wrapper">
+                                <i class="bi bi-search search-lead-icon"></i>
+                                <input id="cmd-exercise-input"
+                                       data-command-input="exercise"
+                                       type="text"
+                                       class="cmd-main-input"
+                                       placeholder="Escribe el ejercicio (ej: press inclinado, sentadilla)... o presiona (@KeyConfig.LabelKey.Display) Etiqueta / (@KeyConfig.NextDayKey.Display) Siguiente Día"
+                                       @bind-value="exerciseSearchText"
+                                       @bind-value:event="oninput"
+                                       @onkeydown="HandleExerciseInputKeyDown"
+                                       autocomplete="off" />
+                                <button type="button" class="btn-inline-confirm" @onclick="ConfirmSelectedExercise">
+                                    <kbd>@KeyConfig.SelectKey.Display</kbd> Insertar
+                                </button>
+                            </div>
+
+                            @{
+                                var matches = MatchedExercises;
+                                var bestMatch = matches.ElementAtOrDefault(selectedSuggestionIndex) ?? matches.FirstOrDefault();
+                            }
+
+                            @if (bestMatch != null)
+                            {
+                                <div class="best-match-showcase" @onclick="() => InsertExerciseAndGoToSeries(bestMatch)">
+                                    <div class="best-match-badge">
+                                        <i class="bi bi-stars"></i> Mejor coincidencia — Presiona <kbd>@KeyConfig.SelectKey.Display</kbd> para insertar
+                                    </div>
+                                    <div class="best-match-content">
+                                        @if (!string.IsNullOrWhiteSpace(bestMatch.RutaImagen))
+                                        {
+                                            <img src="@ImageHelper.GetImageSrc(bestMatch.RutaImagen)"
+                                                 alt="@bestMatch.Nombre"
+                                                 class="best-match-img"
+                                                 onerror="this.style.display='none'" />
+                                        }
+                                        else
+                                        {
+                                            <div class="best-match-placeholder">
+                                                <i class="bi bi-lightning-charge-fill"></i>
+                                            </div>
+                                        }
+                                        <div class="best-match-info">
+                                            <div class="best-match-name">@bestMatch.Nombre</div>
+                                            <div class="best-match-group">
+                                                <i class="bi bi-layers-fill"></i> @bestMatch.GrupoMuscular
+                                            </div>
+                                        </div>
+                                        <div class="best-match-cta">
+                                            <span>Insertar en @(RoutineState.ActiveDia?.Nombre)</span>
+                                            <kbd>@KeyConfig.SelectKey.Display</kbd>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                @if (matches.Count > 1)
+                                {
+                                    <div class="other-matches-strip">
+                                        <span class="strip-label">Otras sugerencias (<kbd>↑</kbd> <kbd>↓</kbd> o clic):</span>
+                                        <div class="suggestions-list">
+                                            @for (int i = 0; i < Math.Min(matches.Count, 6); i++)
+                                            {
+                                                var idx = i;
+                                                var sug = matches[idx];
+                                                <button type="button"
+                                                        class="suggestion-chip @(idx == selectedSuggestionIndex ? "selected" : "")"
+                                                        @onclick="() => InsertExerciseAndGoToSeries(sug)">
+                                                    <span class="chip-name">@sug.Nombre</span>
+                                                    <span class="chip-group">@sug.GrupoMuscular</span>
+                                                </button>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div class="no-match-box">
+                                    <span>No se encontró un ejercicio similar a "<strong>@exerciseSearchText</strong>".</span>
+                                    <button type="button" class="btn-quick-create-from-search" @onclick="QuickCreateExerciseFromSearch">
+                                        <i class="bi bi-plus-circle-fill"></i> Crear "@exerciseSearchText" e insertarlo
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else if (flowState == FlowState.TypingSeries || flowState == FlowState.TypingReps)
+                    {
+                        <div class="console-series-reps-box">
+                            <div class="pending-exercise-summary">
+                                @if (!string.IsNullOrWhiteSpace(pendingItem?.Ejercicio?.RutaImagen))
+                                {
+                                    <img src="@ImageHelper.GetImageSrc(pendingItem.Ejercicio.RutaImagen)"
+                                         alt="@pendingItem.Ejercicio.Nombre"
+                                         class="pending-ex-img" />
+                                }
+                                <div>
+                                    <span class="pending-ex-badge">Ejercicio insertado en @(RoutineState.ActiveDia?.Nombre)</span>
+                                    <h4 class="pending-ex-title">@(pendingItem?.Ejercicio?.Nombre ?? "Ejercicio")</h4>
+                                </div>
+                            </div>
+
+                            <div class="series-reps-inputs-row">
+                                <div class="sr-field-box @(flowState == FlowState.TypingSeries ? "focused-field" : "")">
+                                    <label>1. SERIES <small>(o escribe 4x12)</small></label>
+                                    <input id="cmd-series-input"
+                                           data-command-input="series"
+                                           type="text"
+                                           class="sr-big-input"
+                                           @bind-value="seriesInputText"
+                                           @bind-value:event="oninput"
+                                           @onkeydown="HandleSeriesKeyDown" />
+                                </div>
+
+                                <div class="sr-multiply-icon">
+                                    <i class="bi bi-x-lg"></i>
+                                </div>
+
+                                <div class="sr-field-box @(flowState == FlowState.TypingReps ? "focused-field" : "")">
+                                    <label>2. REPETICIONES</label>
+                                    <input id="cmd-reps-input"
+                                           data-command-input="reps"
+                                           type="text"
+                                           class="sr-big-input"
+                                           @bind-value="repsInputText"
+                                           @bind-value:event="oninput"
+                                           @onkeydown="HandleRepsKeyDown" />
+                                </div>
+
+                                <button type="button" class="btn-confirm-sr" @onclick="ConfirmSeriesAndReps">
+                                    <kbd>@KeyConfig.SelectKey.Display</kbd> Confirmar
+                                </button>
+                            </div>
+                        </div>
+                    }
+                    else if (flowState == FlowState.TypingLabel)
+                    {
+                        <div class="console-label-box">
+                            <div class="search-input-wrapper label-mode-wrapper">
+                                <i class="bi bi-tag-fill label-lead-icon"></i>
+                                <input id="cmd-label-input"
+                                       data-command-input="label"
+                                       type="text"
+                                       class="cmd-main-input"
+                                       placeholder="Escribe el texto de la etiqueta (ej: Superserie, Descanso 90s, Calentamiento) y presiona @KeyConfig.SelectKey.Display..."
+                                       @bind-value="labelInputText"
+                                       @bind-value:event="oninput"
+                                       @onkeydown="HandleLabelKeyDown" />
+                                <button type="button" class="btn-inline-confirm" @onclick="ConfirmLabelInput">
+                                    <kbd>@KeyConfig.SelectKey.Display</kbd> Guardar Etiqueta
+                                </button>
+                            </div>
+                        </div>
+                    }
+                    else if (flowState == FlowState.WaitingCommand)
+                    {
+                        <div class="console-waiting-box">
+                            <div class="waiting-title">
+                                <i class="bi bi-check-circle-fill text-success"></i>
+                                <span>¡Listo! Esperando siguiente comando en <strong>@(RoutineState.ActiveDia?.Nombre)</strong>:</span>
+                            </div>
+                            <div class="waiting-cards-row">
+                                <div class="waiting-cmd-card" @onclick="ActivateExerciseCommand">
+                                    <kbd>@KeyConfig.ExerciseKey.Display</kbd>
+                                    <span>Agregar otro <strong>Ejercicio</strong></span>
+                                </div>
+                                <div class="waiting-cmd-card" @onclick="ActivateLabelCommand">
+                                    <kbd>@KeyConfig.LabelKey.Display</kbd>
+                                    <span>Insertar una <strong>Etiqueta</strong></span>
+                                </div>
+                                <div class="waiting-cmd-card" @onclick="ActivateNextDayCommand">
+                                    <kbd>@KeyConfig.NextDayKey.Display</kbd>
+                                    <span>Pasar al <strong>Siguiente Día</strong></span>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                @* Day Tabs Strip *@
+                <div class="days-tabs-bar">
+                    @foreach (var dia in RoutineState.Dias)
+                    {
+                        var count = RoutineState.RoutineItems.Count(i => i.DiaId == dia.Id);
+                        var isCurrent = RoutineState.ActiveDiaId == dia.Id;
+                        <button type="button"
+                                class="day-tab-pill @(isCurrent ? "active" : "")"
+                                @onclick="() => SelectDayFromUI(dia.Id)">
+                            <i class="bi bi-calendar2-day"></i>
+                            <span>@dia.Nombre</span>
+                            <span class="day-tab-count">@count</span>
+                        </button>
+                    }
+                    <button type="button" class="day-tab-add" @onclick="ActivateNextDayCommand" title="Atajo: tecla @KeyConfig.NextDayKey.Display">
+                        <i class="bi bi-plus-lg"></i> Siguiente Día (<kbd>@KeyConfig.NextDayKey.Display</kbd>)
+                    </button>
+                </div>
+
+                @* Multi-Day Routine Board *@
+                <div class="desktop-days-grid">
+                    @foreach (var dia in RoutineState.Dias)
+                    {
+                        var isCurrent = RoutineState.ActiveDiaId == dia.Id;
+                        var itemsInDay = RoutineState.RoutineItems
+                            .Where(i => i.DiaId == dia.Id)
+                            .OrderBy(i => i.OrdenVisual)
+                            .ToList();
+
+                        <div id="desktop-day-@dia.Id"
+                             class="desktop-day-card @(isCurrent ? "active-day-card" : "")"
+                             @onclick="() => SelectDayFromUI(dia.Id)">
+                            <div class="day-card-header">
+                                <div class="day-card-title-group">
+                                    <span class="active-indicator-badge">
+                                        <i class="bi @(isCurrent ? "bi-record-circle-fill" : "bi-circle")"></i>
+                                    </span>
+                                    <input type="text"
+                                           class="day-name-editable"
+                                           @bind-value="dia.Nombre"
+                                           @bind-value:event="oninput"
+                                           title="Haz clic para cambiar el nombre del día" />
+                                    <span class="day-items-badge">@itemsInDay.Count ítems</span>
+                                </div>
+                                <div class="day-card-actions" @onclick:stopPropagation="true">
+                                    <button type="button"
+                                            class="btn-day-action"
+                                            title="Escribir ejercicio en este día (@KeyConfig.ExerciseKey.Display)"
+                                            @onclick="() => StartExerciseInDay(dia.Id)">
+                                        <i class="bi bi-plus-lg"></i> Ejercicio
+                                    </button>
+                                    <button type="button"
+                                            class="btn-day-action label-action"
+                                            title="Agregar etiqueta en este día (@KeyConfig.LabelKey.Display)"
+                                            @onclick="() => StartLabelInDay(dia.Id)">
+                                        <i class="bi bi-tag-fill"></i> Etiqueta
+                                    </button>
+                                    @if (RoutineState.Dias.Count > 1)
+                                    {
+                                        <button type="button"
+                                                class="btn-day-delete"
+                                                title="Eliminar día"
+                                                @onclick="() => RoutineState.RemoveDay(dia.Id)">
+                                            <i class="bi bi-trash3"></i>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="day-card-body">
+                                @if (!itemsInDay.Any())
+                                {
+                                    <div class="day-empty-state">
+                                        <i class="bi bi-inbox"></i>
+                                        <span>Sin elementos todavía. Presiona <kbd>@KeyConfig.ExerciseKey.Display</kbd> para agregar un ejercicio o <kbd>@KeyConfig.LabelKey.Display</kbd> para una etiqueta.</span>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="day-items-table">
+                                        @for (int i = 0; i < itemsInDay.Count; i++)
+                                        {
+                                            var idx = i;
+                                            var item = itemsInDay[idx];
+                                            var isPending = pendingItem?.Id == item.Id && (flowState == FlowState.TypingSeries || flowState == FlowState.TypingReps);
+
+                                            @if (item.EsEtiqueta)
+                                            {
+                                                <div class="routine-row label-row" @key="item.Id" @onclick:stopPropagation="true">
+                                                    <span class="row-index-badge label-idx">#@(idx + 1)</span>
+                                                    <i class="bi bi-tag-fill label-row-icon"></i>
+                                                    <input type="text"
+                                                           class="inline-label-input"
+                                                           @bind-value="item.TextoEtiqueta"
+                                                           @bind-value:event="oninput" />
+                                                    <div class="row-quick-btns">
+                                                        <button type="button" disabled="@(idx == 0)" @onclick="() => RoutineState.MoveItemStep(item.Id, -1)" title="Subir"><i class="bi bi-arrow-up"></i></button>
+                                                        <button type="button" disabled="@(idx == itemsInDay.Count - 1)" @onclick="() => RoutineState.MoveItemStep(item.Id, 1)" title="Bajar"><i class="bi bi-arrow-down"></i></button>
+                                                        <button type="button" class="danger" @onclick="() => RoutineState.RemoveItem(item.Id)" title="Eliminar"><i class="bi bi-x-lg"></i></button>
+                                                    </div>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <div class="routine-row exercise-row @(isPending ? "editing-now" : "")" @key="item.Id" @onclick:stopPropagation="true">
+                                                    <span class="row-index-badge">#@(idx + 1)</span>
+                                                    @if (!string.IsNullOrWhiteSpace(item.Ejercicio?.RutaImagen))
+                                                    {
+                                                        <img src="@ImageHelper.GetImageSrc(item.Ejercicio.RutaImagen)"
+                                                             alt="@item.Ejercicio.Nombre"
+                                                             class="row-ex-thumb"
+                                                             onerror="this.style.display='none'" />
+                                                    }
+                                                    else
+                                                    {
+                                                        <div class="row-ex-placeholder">
+                                                            <i class="bi bi-lightning-charge-fill"></i>
+                                                        </div>
+                                                    }
+
+                                                    <div class="row-ex-main">
+                                                        <div class="row-ex-name">@item.Ejercicio?.Nombre</div>
+                                                        <span class="row-ex-group">@item.Ejercicio?.GrupoMuscular</span>
+                                                    </div>
+
+                                                    <div class="row-sr-controls">
+                                                        <label>
+                                                            <span>Series</span>
+                                                            <input type="number"
+                                                                   min="1"
+                                                                   class="inline-num-input"
+                                                                   @bind-value="item.Series"
+                                                                   @bind-value:event="oninput" />
+                                                        </label>
+                                                        <span class="sr-sep">×</span>
+                                                        <label>
+                                                            <span>Reps</span>
+                                                            <input type="number"
+                                                                   min="1"
+                                                                   class="inline-num-input"
+                                                                   @bind-value="item.Repeticiones"
+                                                                   @bind-value:event="oninput" />
+                                                        </label>
+                                                    </div>
+
+                                                    <div class="row-quick-btns">
+                                                        <button type="button" disabled="@(idx == 0)" @onclick="() => RoutineState.MoveItemStep(item.Id, -1)" title="Subir"><i class="bi bi-arrow-up"></i></button>
+                                                        <button type="button" disabled="@(idx == itemsInDay.Count - 1)" @onclick="() => RoutineState.MoveItemStep(item.Id, 1)" title="Bajar"><i class="bi bi-arrow-down"></i></button>
+                                                        <button type="button" class="danger" @onclick="() => RoutineState.RemoveItem(item.Id)" title="Eliminar"><i class="bi bi-x-lg"></i></button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* Right Sidebar: Full Exercise & Muscle Group Catalog Manager *@
+        @if (showCatalogSidebar)
+        {
+            <aside class="catalog-sidebar-column">
+                <ExerciseCatalogManager Ejercicios="allExercises"
+                                        OnCatalogUpdated="ReloadCatalog"
+                                        OnQuickSelectExercise="HandleCatalogQuickInsert" />
+            </aside>
+        }
+    </div>
+</div>
+
+@* Modal de Configuración de Teclas de Comandos *@
+@if (showKeySettingsModal)
+{
+    <div class="pdf-modal-backdrop" @onclick="CloseKeySettingsModal">
+        <div class="settings-modal-card" @onclick:stopPropagation="true">
+            <div class="pdf-modal-header">
+                <h3><i class="bi bi-gear-fill"></i> Configuración de Teclas de Comandos</h3>
+                <button type="button" class="pdf-modal-close" @onclick="CloseKeySettingsModal"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <p class="pdf-modal-desc">
+                Haz clic en <strong>Cambiar tecla</strong> junto al comando que desees personalizar y luego presiona la nueva tecla en tu teclado:
+            </p>
+
+            <div class="keybindings-list">
+                @* 1. Ejercicio *@
+                <div class="keybinding-row @(capturingCommandId == "SHIFT_RIGHT" ? "capturing" : "")">
+                    <div class="kb-info">
+                        <div class="kb-title"><i class="bi bi-lightning-charge-fill"></i> Comando: Ejercicio</div>
+                        <div class="kb-sub">Activa el buscador para escribir e insertar un ejercicio</div>
+                    </div>
+                    <div class="kb-actions">
+                        <kbd class="kb-badge">@KeyConfig.ExerciseKey.Display</kbd>
+                        @if (capturingCommandId == "SHIFT_RIGHT")
+                        {
+                            <button type="button" class="btn-kb-listening" @onclick="CancelKeyCaptureAsync">
+                                <i class="bi bi-record-circle-fill"></i> Presiona una tecla... (Esc cancelar)
+                            </button>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn-kb-change" @onclick='() => StartKeyCaptureAsync("SHIFT_RIGHT")'>
+                                <i class="bi bi-keyboard"></i> Cambiar tecla
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                @* 2. Etiqueta *@
+                <div class="keybinding-row @(capturingCommandId == "LABEL" ? "capturing" : "")">
+                    <div class="kb-info">
+                        <div class="kb-title"><i class="bi bi-tag-fill"></i> Comando: Etiqueta</div>
+                        <div class="kb-sub">Inserta una nota o etiqueta (Superserie, Descanso, etc.)</div>
+                    </div>
+                    <div class="kb-actions">
+                        <kbd class="kb-badge">@KeyConfig.LabelKey.Display</kbd>
+                        @if (capturingCommandId == "LABEL")
+                        {
+                            <button type="button" class="btn-kb-listening" @onclick="CancelKeyCaptureAsync">
+                                <i class="bi bi-record-circle-fill"></i> Presiona una tecla... (Esc cancelar)
+                            </button>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn-kb-change" @onclick='() => StartKeyCaptureAsync("LABEL")'>
+                                <i class="bi bi-keyboard"></i> Cambiar tecla
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                @* 3. Siguiente Día *@
+                <div class="keybinding-row @(capturingCommandId == "NEXT_DAY" ? "capturing" : "")">
+                    <div class="kb-info">
+                        <div class="kb-title"><i class="bi bi-calendar-plus-fill"></i> Comando: Siguiente Día</div>
+                        <div class="kb-sub">Crea o avanza al siguiente día de entrenamiento (Día 2, Día 3...)</div>
+                    </div>
+                    <div class="kb-actions">
+                        <kbd class="kb-badge">@KeyConfig.NextDayKey.Display</kbd>
+                        @if (capturingCommandId == "NEXT_DAY")
+                        {
+                            <button type="button" class="btn-kb-listening" @onclick="CancelKeyCaptureAsync">
+                                <i class="bi bi-record-circle-fill"></i> Presiona una tecla... (Esc cancelar)
+                            </button>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn-kb-change" @onclick='() => StartKeyCaptureAsync("NEXT_DAY")'>
+                                <i class="bi bi-keyboard"></i> Cambiar tecla
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                @* 4. Selección *@
+                <div class="keybinding-row @(capturingCommandId == "ENTER" ? "capturing" : "")">
+                    <div class="kb-info">
+                        <div class="kb-title"><i class="bi bi-check2-circle"></i> Comando: Selección / Confirmar</div>
+                        <div class="kb-sub">Inserta el ejercicio elegido y confirma series, repeticiones o etiquetas</div>
+                    </div>
+                    <div class="kb-actions">
+                        <kbd class="kb-badge">@KeyConfig.SelectKey.Display</kbd>
+                        @if (capturingCommandId == "ENTER")
+                        {
+                            <button type="button" class="btn-kb-listening" @onclick="CancelKeyCaptureAsync">
+                                <i class="bi bi-record-circle-fill"></i> Presiona una tecla... (Esc cancelar)
+                            </button>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn-kb-change" @onclick='() => StartKeyCaptureAsync("ENTER")'>
+                                <i class="bi bi-keyboard"></i> Cambiar tecla
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-modal-footer">
+                <button type="button" class="btn-reset-defaults" @onclick="ResetDefaultKeysAsync">
+                    <i class="bi bi-arrow-counterclockwise"></i> Restaurar por defecto (Shift Der, -, ¿, Enter)
+                </button>
+                <button type="button" class="btn-modal-confirm" @onclick="CloseKeySettingsModal">
+                    <i class="bi bi-check-lg"></i> Listo
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showPdfModal)
+{
+    <div class="pdf-modal-backdrop" @onclick="() => showPdfModal = false">
+        <div class="pdf-modal-card" @onclick:stopPropagation="true">
+            <div class="pdf-modal-header">
+                <h3><i class="bi bi-file-earmark-pdf-fill"></i> Exportar Rutina a PDF</h3>
+                <button type="button" class="pdf-modal-close" @onclick="() => showPdfModal = false"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <p class="pdf-modal-desc">Confirma el título del documento PDF. Se guardará en tu equipo y se abrirá automáticamente:</p>
+            <input type="text"
+                   class="pdf-modal-input"
+                   placeholder="Ej: Rutina Hipertrofia - Semana 1"
+                   @bind-value="pdfTitle"
+                   @bind-value:event="oninput" />
+            <div class="pdf-modal-actions">
+                <button type="button" class="btn-modal-cancel" @onclick="() => showPdfModal = false">Cancelar</button>
+                <button type="button" class="btn-modal-confirm" @onclick="ExportPdfAsync">
+                    <i class="bi bi-download"></i> Generar y Abrir PDF
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private enum FlowState
+    {
+        NotStarted,
+        TypingExercise,
+        TypingSeries,
+        TypingReps,
+        TypingLabel,
+        WaitingCommand
+    }
+
+    private FlowState flowState = FlowState.NotStarted;
+    private List<Ejercicio> allExercises = new();
+    private bool showCatalogSidebar = true;
+    private bool showPdfModal = false;
+    private bool showKeySettingsModal = false;
+    private string? capturingCommandId = null;
+    private string pdfTitle = "Mi Plan de Entrenamiento";
+
+    private string exerciseSearchText = string.Empty;
+    private int selectedSuggestionIndex = 0;
+    private ItemRutina? pendingItem = null;
+    private string seriesInputText = "4";
+    private string repsInputText = "12";
+    private string labelInputText = string.Empty;
+
+    private DotNetObjectReference<Home>? dotNetRef;
+
+    protected override void OnInitialized()
+    {
+        allExercises = DbContext.Ejercicios.ToList();
+        RoutineState.OnStateChanged += StateHasChanged;
+        ThemeState.OnThemeChanged += StateHasChanged;
+        KeyConfig.OnBindingsChanged += StateHasChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+            await KeyConfig.InitializeAsync();
+            await JS.InvokeVoidAsync("registerDesktopCommandHotkeys", dotNetRef);
+            StateHasChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        RoutineState.OnStateChanged -= StateHasChanged;
+        ThemeState.OnThemeChanged -= StateHasChanged;
+        KeyConfig.OnBindingsChanged -= StateHasChanged;
+        dotNetRef?.Dispose();
+    }
+
+    private void OpenKeySettingsModal()
+    {
+        capturingCommandId = null;
+        showKeySettingsModal = true;
+    }
+
+    private async Task CloseKeySettingsModal()
+    {
+        capturingCommandId = null;
+        showKeySettingsModal = false;
+        await JS.InvokeVoidAsync("window.cancelListeningForCommandKey");
+    }
+
+    private async Task StartKeyCaptureAsync(string commandId)
+    {
+        capturingCommandId = commandId;
+        await JS.InvokeVoidAsync("window.startListeningForCommandKey", commandId);
+    }
+
+    private async Task CancelKeyCaptureAsync()
+    {
+        capturingCommandId = null;
+        await JS.InvokeVoidAsync("window.cancelListeningForCommandKey");
+    }
+
+    private async Task ResetDefaultKeysAsync()
+    {
+        capturingCommandId = null;
+        await JS.InvokeVoidAsync("window.cancelListeningForCommandKey");
+        await KeyConfig.ResetToDefaultsAsync();
+    }
+
+    [JSInvokable]
+    public async Task OnCapturedCommandKey(string commandId, string key, string code, string display)
+    {
+        capturingCommandId = null;
+        await KeyConfig.UpdateBindingAsync(commandId, key, code, display);
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnCancelCaptureCommandKey()
+    {
+        capturingCommandId = null;
+        StateHasChanged();
+    }
+
+    private void ReloadCatalog()
+    {
+        allExercises = DbContext.Ejercicios.ToList();
+        StateHasChanged();
+    }
+
+    private async Task ToggleTheme()
+    {
+        await ThemeState.ToggleThemeAsync();
+    }
+
+    private async Task HandleCrearRutinaClick()
+    {
+        if (!RoutineState.IsRoutineStarted)
+        {
+            await StartNewRoutineFlow();
+        }
+        else
+        {
+            bool confirm = await JS.InvokeAsync<bool>("confirm", "¿Deseas reiniciar la rutina actual y comenzar desde Día 1?");
+            if (confirm)
+            {
+                RoutineState.ResetAndStartNewRoutine();
+                await EnterTypingExerciseState();
+            }
+        }
+    }
+
+    private async Task StartNewRoutineFlow()
+    {
+        RoutineState.StartRoutine();
+        await EnterTypingExerciseState();
+    }
+
+    private async Task EnterTypingExerciseState()
+    {
+        flowState = FlowState.TypingExercise;
+        exerciseSearchText = string.Empty;
+        selectedSuggestionIndex = 0;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("focusElementById", "cmd-exercise-input", true);
+    }
+
+    private async Task EnterTypingLabelState()
+    {
+        if (!RoutineState.IsRoutineStarted)
+        {
+            RoutineState.StartRoutine();
+        }
+        flowState = FlowState.TypingLabel;
+        labelInputText = string.Empty;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("focusElementById", "cmd-label-input", true);
+    }
+
+    [JSInvokable]
+    public async Task HandleGlobalCommandKey(string command)
+    {
+        switch (command)
+        {
+            case "SHIFT_RIGHT":
+                await ActivateExerciseCommand();
+                break;
+
+            case "LABEL":
+                await ActivateLabelCommand();
+                break;
+
+            case "NEXT_DAY":
+                await ActivateNextDayCommand();
+                break;
+
+            case "ENTER":
+                await ActivateEnterCommand();
+                break;
+        }
+    }
+
+    private async Task ActivateExerciseCommand()
+    {
+        if (!RoutineState.IsRoutineStarted)
+        {
+            RoutineState.StartRoutine();
+        }
+        await EnterTypingExerciseState();
+    }
+
+    private async Task ActivateLabelCommand()
+    {
+        await EnterTypingLabelState();
+    }
+
+    private async Task ActivateNextDayCommand()
+    {
+        var nextDia = RoutineState.AdvanceOrCreateNextDay();
+        flowState = FlowState.WaitingCommand;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("scrollDayIntoView", nextDia.Id);
+    }
+
+    private async Task ActivateEnterCommand()
+    {
+        if (!RoutineState.IsRoutineStarted)
+        {
+            await StartNewRoutineFlow();
+            return;
+        }
+
+        if (flowState == FlowState.TypingExercise)
+        {
+            await ConfirmSelectedExercise();
+        }
+        else if (flowState == FlowState.TypingSeries)
+        {
+            await AdvanceFromSeriesToReps();
+        }
+        else if (flowState == FlowState.TypingReps)
+        {
+            await ConfirmSeriesAndReps();
+        }
+        else if (flowState == FlowState.TypingLabel)
+        {
+            await ConfirmLabelInput();
+        }
+        else if (flowState == FlowState.WaitingCommand)
+        {
+            await EnterTypingExerciseState();
+        }
+    }
+
+    private async Task HandleExerciseInputKeyDown(KeyboardEventArgs e)
+    {
+        var matches = MatchedExercises;
+
+        if (e.Key == "ArrowDown")
+        {
+            if (matches.Count > 0)
+            {
+                selectedSuggestionIndex = (selectedSuggestionIndex + 1) % Math.Min(matches.Count, 6);
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            if (matches.Count > 0)
+            {
+                int max = Math.Min(matches.Count, 6);
+                selectedSuggestionIndex = (selectedSuggestionIndex - 1 + max) % max;
+            }
+        }
+        else if (e.Key == "Enter")
+        {
+            await ConfirmSelectedExercise();
+        }
+        else if (e.Key == "Escape")
+        {
+            flowState = FlowState.WaitingCommand;
+        }
+        else
+        {
+            selectedSuggestionIndex = 0;
+        }
+    }
+
+    private async Task ConfirmSelectedExercise()
+    {
+        var matches = MatchedExercises;
+        var chosen = matches.ElementAtOrDefault(selectedSuggestionIndex) ?? matches.FirstOrDefault();
+        if (chosen != null)
+        {
+            await InsertExerciseAndGoToSeries(chosen);
+        }
+        else if (!string.IsNullOrWhiteSpace(exerciseSearchText))
+        {
+            await QuickCreateExerciseFromSearch();
+        }
+    }
+
+    private async Task QuickCreateExerciseFromSearch()
+    {
+        if (string.IsNullOrWhiteSpace(exerciseSearchText)) return;
+
+        var newEx = new Ejercicio
+        {
+            Nombre = exerciseSearchText.Trim(),
+            GrupoMuscular = "General",
+            RutaImagen = string.Empty
+        };
+        DbContext.Ejercicios.Add(newEx);
+        DbContext.SaveChanges();
+        allExercises = DbContext.Ejercicios.ToList();
+
+        await InsertExerciseAndGoToSeries(newEx);
+    }
+
+    private async Task InsertExerciseAndGoToSeries(Ejercicio ejercicio)
+    {
+        var dia = RoutineState.StartRoutine();
+        pendingItem = RoutineState.AddExerciseToDay(ejercicio, dia.Id, 4, 12);
+        seriesInputText = pendingItem.Series.ToString();
+        repsInputText = pendingItem.Repeticiones.ToString();
+        flowState = FlowState.TypingSeries;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("focusElementById", "cmd-series-input", true);
+    }
+
+    private async Task HandleCatalogQuickInsert(Ejercicio ejercicio)
+    {
+        await InsertExerciseAndGoToSeries(ejercicio);
+    }
+
+    private async Task HandleSeriesKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await AdvanceFromSeriesToReps();
+        }
+        else if (e.Key == "Escape")
+        {
+            flowState = FlowState.WaitingCommand;
+        }
+    }
+
+    private async Task AdvanceFromSeriesToReps()
+    {
+        if (TryParseCombinedSetsReps(seriesInputText, out int parsedSets, out int parsedReps))
+        {
+            if (pendingItem != null)
+            {
+                RoutineState.UpdateExerciseSetsReps(pendingItem.Id, parsedSets, parsedReps);
+            }
+            pendingItem = null;
+            flowState = FlowState.WaitingCommand;
+            StateHasChanged();
+            return;
+        }
+
+        if (int.TryParse(seriesInputText.Trim(), out int s) && s > 0 && pendingItem != null)
+        {
+            pendingItem.Series = s;
+        }
+
+        flowState = FlowState.TypingReps;
+        StateHasChanged();
+        await Task.Yield();
+        await JS.InvokeVoidAsync("focusElementById", "cmd-reps-input", true);
+    }
+
+    private async Task HandleRepsKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ConfirmSeriesAndReps();
+        }
+        else if (e.Key == "Escape")
+        {
+            flowState = FlowState.WaitingCommand;
+        }
+    }
+
+    private Task ConfirmSeriesAndReps()
+    {
+        if (pendingItem != null)
+        {
+            int s = int.TryParse(seriesInputText.Trim(), out int parsedS) && parsedS > 0 ? parsedS : pendingItem.Series;
+            int r = int.TryParse(repsInputText.Trim(), out int parsedR) && parsedR > 0 ? parsedR : pendingItem.Repeticiones;
+            RoutineState.UpdateExerciseSetsReps(pendingItem.Id, s, r);
+        }
+
+        pendingItem = null;
+        flowState = FlowState.WaitingCommand;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleLabelKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ConfirmLabelInput();
+        }
+        else if (e.Key == "Escape")
+        {
+            flowState = FlowState.WaitingCommand;
+        }
+    }
+
+    private Task ConfirmLabelInput()
+    {
+        var dia = RoutineState.StartRoutine();
+        string texto = string.IsNullOrWhiteSpace(labelInputText) ? "Nota / Indicación" : labelInputText.Trim();
+        RoutineState.AddLabelToDay(texto, dia.Id);
+        labelInputText = string.Empty;
+        flowState = FlowState.WaitingCommand;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void SelectDayFromUI(string diaId)
+    {
+        RoutineState.SelectDay(diaId);
+    }
+
+    private async Task StartExerciseInDay(string diaId)
+    {
+        RoutineState.SelectDay(diaId);
+        await EnterTypingExerciseState();
+    }
+
+    private async Task StartLabelInDay(string diaId)
+    {
+        RoutineState.SelectDay(diaId);
+        await EnterTypingLabelState();
+    }
+
+    private static bool TryParseCombinedSetsReps(string raw, out int sets, out int reps)
+    {
+        sets = 0;
+        reps = 0;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+
+        var parts = raw.ToLowerInvariant().Split(new[] { 'x', '*', '-', ' ', '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2 &&
+            int.TryParse(parts[0], out int s) && s > 0 &&
+            int.TryParse(parts[1], out int r) && r > 0)
+        {
+            sets = s;
+            reps = r;
+            return true;
+        }
+        return false;
+    }
+
+    private List<Ejercicio> MatchedExercises
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(exerciseSearchText))
+            {
+                return allExercises.OrderBy(e => e.Nombre).Take(8).ToList();
+            }
+
+            string queryNorm = NormalizeText(exerciseSearchText);
+            string[] queryTokens = queryNorm.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            return allExercises
+                .Select(e => new
+                {
+                    Ejercicio = e,
+                    Score = ComputeSimilarityScore(e, queryNorm, queryTokens)
+                })
+                .Where(x => x.Score > 0)
+                .OrderByDescending(x => x.Score)
+                .ThenBy(x => x.Ejercicio.Nombre.Length)
+                .Select(x => x.Ejercicio)
+                .ToList();
+        }
+    }
+
+    private static int ComputeSimilarityScore(Ejercicio ej, string queryNorm, string[] queryTokens)
+    {
+        string nameNorm = NormalizeText(ej.Nombre);
+        string groupNorm = NormalizeText(ej.GrupoMuscular);
+        string[] nameTokens = nameNorm.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        if (nameNorm == queryNorm)
+            return 2000;
+
+        int score = 0;
+
+        if (nameNorm.StartsWith(queryNorm, StringComparison.Ordinal))
+            score += 1200;
+        else if (nameNorm.Contains(queryNorm, StringComparison.Ordinal))
+            score += 800;
+
+        int matchedTokens = 0;
+        foreach (var qt in queryTokens)
+        {
+            if (nameTokens.Any(nt => nt.StartsWith(qt, StringComparison.Ordinal)))
+            {
+                score += 350;
+                matchedTokens++;
+            }
+            else if (nameNorm.Contains(qt, StringComparison.Ordinal))
+            {
+                score += 220;
+                matchedTokens++;
+            }
+            else if (groupNorm.StartsWith(qt, StringComparison.Ordinal))
+            {
+                score += 150;
+                matchedTokens++;
+            }
+            else
+            {
+                int bestDist = nameTokens.Select(nt => LevenshteinDistance(nt, qt)).DefaultIfEmpty(99).Min();
+                if (qt.Length >= 3 && bestDist <= 1)
+                {
+                    score += 160;
+                    matchedTokens++;
+                }
+                else if (qt.Length >= 5 && bestDist <= 2)
+                {
+                    score += 90;
+                    matchedTokens++;
+                }
+            }
+        }
+
+        if (matchedTokens == queryTokens.Length && queryTokens.Length > 1)
+        {
+            score += 400;
+        }
+
+        if (score == 0 && queryTokens.Length == 1 && queryNorm.Length >= 2)
+        {
+            string initials = string.Concat(nameTokens.Where(t => t.Length > 0).Select(t => t[0]));
+            if (initials.Contains(queryNorm, StringComparison.Ordinal))
+            {
+                score += 300;
+            }
+        }
+
+        return score;
+    }
+
+    private static string NormalizeText(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+        string normalized = input.Trim().ToLowerInvariant().Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(normalized.Length);
+        foreach (char c in normalized)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(c);
+            }
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC);
+    }
+
+    private static int LevenshteinDistance(string a, string b)
+    {
+        int n = a.Length;
+        int m = b.Length;
+        var d = new int[n + 1, m + 1];
+        for (int i = 0; i <= n; i++) d[i, 0] = i;
+        for (int j = 0; j <= m; j++) d[0, j] = j;
+
+        for (int i = 1; i <= n; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                d[i, j] = Math.Min(
+                    Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
+                    d[i - 1, j - 1] + cost);
+            }
+        }
+        return d[n, m];
+    }
+
+    private string GetFlowStateCss() => flowState switch
+    {
+        FlowState.TypingExercise => "state-exercise",
+        FlowState.TypingSeries or FlowState.TypingReps => "state-series",
+        FlowState.TypingLabel => "state-label",
+        FlowState.WaitingCommand => "state-waiting",
+        _ => "state-idle"
+    };
+
+    private string GetFlowStateTitle() => flowState switch
+    {
+        FlowState.NotStarted => $"Presiona 'Crear Rutina' o [{KeyConfig.SelectKey.Display}] para comenzar en Día 1",
+        FlowState.TypingExercise => $"Escribiendo Ejercicio en {RoutineState.ActiveDia?.Nombre} ([{KeyConfig.SelectKey.Display}] para insertar)",
+        FlowState.TypingSeries => $"Escribe las Series y presiona [{KeyConfig.SelectKey.Display}]",
+        FlowState.TypingReps => $"Escribe las Repeticiones y presiona [{KeyConfig.SelectKey.Display}]",
+        FlowState.TypingLabel => $"Escribiendo Etiqueta en {RoutineState.ActiveDia?.Nombre} ([{KeyConfig.SelectKey.Display}] para guardar)",
+        FlowState.WaitingCommand => $"Esperando comando: [{KeyConfig.ExerciseKey.Display}] Ejercicio  |  [{KeyConfig.LabelKey.Display}] Etiqueta  |  [{KeyConfig.NextDayKey.Display}] Siguiente Día",
+        _ => string.Empty
+    };
+
+    private async Task OpenPdfModal()
+    {
+        if (!RoutineState.RoutineItems.Any())
+        {
+            await JS.InvokeVoidAsync("alert", "Agrega al menos un ejercicio o etiqueta antes de exportar el PDF.");
+            return;
+        }
+        showPdfModal = true;
+    }
+
+    private async Task ExportPdfAsync()
+    {
+        showPdfModal = false;
+        try
+        {
+            string finalTitle = string.IsNullOrWhiteSpace(pdfTitle) ? "Mi Plan de Entrenamiento" : pdfTitle.Trim();
+            var bytes = PdfService.GenerateRoutinePdf(RoutineState.RoutineItems, RoutineState.Dias, finalTitle);
+            if (bytes == null || bytes.Length == 0) return;
+
+            string safeTitle = string.Join("_", finalTitle.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+            if (string.IsNullOrWhiteSpace(safeTitle)) safeTitle = "Rutina";
+
+            string desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if (string.IsNullOrWhiteSpace(desktopDir) || !Directory.Exists(desktopDir))
+            {
+                desktopDir = FileSystem.CacheDirectory;
+            }
+
+            string fileName = $"{safeTitle}_{DateTime.Now:yyyyMMdd_HHmmss}.pdf";
+            string fullPath = Path.Combine(desktopDir, fileName);
+            await File.WriteAllBytesAsync(fullPath, bytes);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = fullPath,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("alert", $"Error al exportar PDF: {ex.Message}");
+        }
+    }
+}

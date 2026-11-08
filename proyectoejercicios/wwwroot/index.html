@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>proyectoejercicios</title>
+    <base href="/" />
+    <link rel="stylesheet" href="lib/bootstrap-icons/font/bootstrap-icons.min.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="proyectoejercicios.styles.css" />
+    <link rel="icon" href="data:,">
+</head>
+
+<body>
+
+    <div class="status-bar-safe-area"></div>
+
+    <div id="app">Loading...</div>
+
+    <div id="blazor-error-ui" data-nosnippet>
+        An unhandled error has occurred.
+        <a href="." class="reload">Reload</a>
+        <span class="dismiss"><i class="bi bi-x-lg"></i></span>
+    </div>
+
+    <script src="_framework/blazor.webview.js" autostart="false"></script>
+
+    <script>
+        window.setTheme = function (isDark) {
+            if (isDark) {
+                document.body.classList.add('dark-theme');
+            } else {
+                document.body.classList.remove('dark-theme');
+            }
+        };
+
+        window.scrollToDayColumn = function (diaId) {
+            var board = document.querySelector('.routine-board');
+            if (!board) return;
+
+            if (!diaId) {
+                board.scrollTo({ left: 0, behavior: 'smooth' });
+                return;
+            }
+
+            var col = document.getElementById('day-col-' + diaId);
+            if (!col) return;
+
+            var boardRect = board.getBoundingClientRect();
+            var colRect = col.getBoundingClientRect();
+            var targetLeft = board.scrollLeft + (colRect.left - boardRect.left) - 8;
+            board.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
+        };
+
+        window.scrollRoutineBoardBy = function (deltaX) {
+            var board = document.querySelector('.routine-board');
+            if (!board) return;
+            board.scrollBy({ left: deltaX, behavior: 'smooth' });
+        };
+
+        (function () {
+            // Synchronize exact viewport dimensions on startup and during screen rotation
+            function syncViewportMetrics() {
+                var vw = window.innerWidth || document.documentElement.clientWidth;
+                var vh = window.innerHeight || document.documentElement.clientHeight;
+                if (window.visualViewport) {
+                    vw = window.visualViewport.width || vw;
+                    vh = window.visualViewport.height || vh;
+                }
+                document.documentElement.style.setProperty('--app-width', vw + 'px');
+                document.documentElement.style.setProperty('--app-height', vh + 'px');
+            }
+
+            function scheduleViewportSync() {
+                syncViewportMetrics();
+                setTimeout(syncViewportMetrics, 60);
+                setTimeout(syncViewportMetrics, 180);
+                setTimeout(syncViewportMetrics, 380);
+            }
+
+            syncViewportMetrics();
+            window.addEventListener('resize', scheduleViewportSync, { passive: true });
+            window.addEventListener('orientationchange', scheduleViewportSync, { passive: true });
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', syncViewportMetrics, { passive: true });
+            }
+
+            // Try locking web screen orientation to landscape if supported
+            if (screen && screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(function () { });
+            }
+
+            var lastInputWasTouch = false;
+
+            document.addEventListener('mousedown', function () {
+                lastInputWasTouch = false;
+            }, { passive: true, capture: true });
+
+            document.addEventListener('touchstart', function () {
+                lastInputWasTouch = true;
+            }, { passive: true, capture: true });
+
+            function clearDragHighlights() {
+                document.querySelectorAll('.drag-over-slot, .drag-over-card, .drag-over-column, .drag-over-empty').forEach(function (el) {
+                    el.classList.remove('drag-over-slot', 'drag-over-card', 'drag-over-column', 'drag-over-empty');
+                });
+            }
+
+            function cleanupDragState() {
+                document.body.classList.remove('is-dragging-active');
+                document.querySelectorAll('.is-being-dragged').forEach(function (el) {
+                    el.classList.remove('is-being-dragged');
+                });
+                clearDragHighlights();
+            }
+
+            function highlightAtPoint(clientX, clientY) {
+                var target = document.elementFromPoint(clientX, clientY);
+                if (!target || !target.closest) return null;
+
+                var slot = target.closest('.drop-slot');
+                var card = target.closest('.routine-item');
+                var emptyZone = target.closest('.empty-dropzone');
+                var dayCol = target.closest('.day-column');
+
+                clearDragHighlights();
+
+                if (dayCol) {
+                    dayCol.classList.add('drag-over-column');
+                }
+                if (slot) {
+                    slot.classList.add('drag-over-slot');
+                } else if (emptyZone) {
+                    emptyZone.classList.add('drag-over-empty');
+                } else if (card && !card.classList.contains('is-being-dragged')) {
+                    card.classList.add('drag-over-card');
+                }
+
+                var board = target.closest('.routine-board') || document.querySelector('.routine-board');
+                if (board) {
+                    var rect = board.getBoundingClientRect();
+                    var edgeThreshold = 70;
+                    if (clientX >= rect.left && clientX - rect.left < edgeThreshold) {
+                        board.scrollLeft -= 16;
+                    } else if (clientX <= rect.right && rect.right - clientX < edgeThreshold) {
+                        board.scrollLeft += 16;
+                    }
+                }
+
+                var list = target.closest('.items-list');
+                if (list) {
+                    var listRect = list.getBoundingClientRect();
+                    var vThreshold = 45;
+                    if (clientY - listRect.top < vThreshold) {
+                        list.scrollTop -= 10;
+                    } else if (listRect.bottom - clientY < vThreshold) {
+                        list.scrollTop += 10;
+                    }
+                }
+
+                return slot || emptyZone || card || dayCol;
+            }
+
+            // Standard HTML5 Drag and Drop (Desktop mouse & synthetic touch drag)
+            document.addEventListener('dragstart', function (e) {
+                // Prevent native HTML5 drag from hijacking touch scrolling on cards
+                if (lastInputWasTouch && !e.isSyntheticTouchDrag) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+
+                var target = e.target;
+                if (!target || !target.closest) return;
+
+                if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') {
+                    return;
+                }
+
+                var card = target.closest('.exercise-item, .routine-item, .draggable-label-creator');
+                if (!card) return;
+
+                try {
+                    if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'copyMove';
+                        e.dataTransfer.setData('text/plain', 'routine-drag');
+                    }
+                } catch (err) { }
+
+                requestAnimationFrame(function () {
+                    document.body.classList.add('is-dragging-active');
+                    card.classList.add('is-being-dragged');
+                });
+            }, false);
+
+            document.addEventListener('dragover', function (e) {
+                var dropEl = highlightAtPoint(e.clientX, e.clientY);
+                if (dropEl) {
+                    e.preventDefault();
+                }
+            }, false);
+
+            document.addEventListener('drop', function () {
+                cleanupDragState();
+            }, false);
+
+            document.addEventListener('dragend', function () {
+                cleanupDragState();
+            }, false);
+
+            // Touch Drag-and-Drop Bridge + Directional Horizontal Board Scroll Coordinator
+            var touchDragSource = null;
+            var touchGhost = null;
+            var touchStartedDrag = false;
+            var startX = 0, startY = 0;
+
+            // Board horizontal scroll state so nested vertical scrollers never trap horizontal swipes
+            var activeBoard = null;
+            var boardStartScrollLeft = 0;
+            var boardScrollLock = null; // 'h' or 'v'
+            var lastTouchX = 0;
+            var lastTouchTime = 0;
+            var velocityX = 0;
+            var inertiaFrame = null;
+
+            function stopBoardInertia() {
+                if (inertiaFrame) {
+                    cancelAnimationFrame(inertiaFrame);
+                    inertiaFrame = null;
+                }
+            }
+
+            document.addEventListener('touchstart', function (e) {
+                stopBoardInertia();
+                if (e.touches.length !== 1) return;
+                var target = e.target;
+                if (!target || !target.closest) return;
+
+                var touch = e.touches[0];
+                startX = touch.clientX;
+                startY = touch.clientY;
+                lastTouchX = touch.clientX;
+                lastTouchTime = performance.now();
+                velocityX = 0;
+
+                // 1. Check if touching a dedicated drag handle
+                var handle = target.closest('.drag-grip, .card-drag-badge, .draggable-label-creator');
+                if (handle) {
+                    var card = target.closest('.exercise-item, .routine-item, .draggable-label-creator');
+                    if (card) {
+                        touchDragSource = card;
+                        touchStartedDrag = false;
+                        activeBoard = null;
+                        boardScrollLock = null;
+                        return;
+                    }
+                }
+
+                touchDragSource = null;
+                touchStartedDrag = false;
+
+                // 2. Check if touching inside .routine-board for smooth horizontal scrolling
+                var board = target.closest('.routine-board');
+                if (board) {
+                    activeBoard = board;
+                    boardStartScrollLeft = board.scrollLeft;
+                    boardScrollLock = null;
+                } else {
+                    activeBoard = null;
+                    boardScrollLock = null;
+                }
+            }, { passive: true });
+
+            document.addEventListener('touchmove', function (e) {
+                if (e.touches.length !== 1) return;
+                var touch = e.touches[0];
+
+                // Case A: Dragging an exercise/item/label from its grip handle
+                if (touchDragSource) {
+                    var dx = Math.abs(touch.clientX - startX);
+                    var dy = Math.abs(touch.clientY - startY);
+
+                    if (!touchStartedDrag && (dx > 8 || dy > 8)) {
+                        touchStartedDrag = true;
+                        var dragStartEvt = new Event('dragstart', { bubbles: true, cancelable: true });
+                        dragStartEvt.isSyntheticTouchDrag = true;
+                        touchDragSource.dispatchEvent(dragStartEvt);
+                        document.body.classList.add('is-dragging-active');
+                        touchDragSource.classList.add('is-being-dragged');
+
+                        touchGhost = touchDragSource.cloneNode(true);
+                        touchGhost.style.position = 'fixed';
+                        touchGhost.style.width = Math.min(touchDragSource.offsetWidth || 200, 230) + 'px';
+                        touchGhost.style.pointerEvents = 'none';
+                        touchGhost.style.opacity = '0.88';
+                        touchGhost.style.zIndex = '9999';
+                        touchGhost.style.transform = 'scale(0.92)';
+                        touchGhost.style.boxShadow = '0 12px 24px rgba(37, 99, 235, 0.35)';
+                        document.body.appendChild(touchGhost);
+                    }
+
+                    if (touchStartedDrag) {
+                        if (e.cancelable) e.preventDefault();
+                        if (touchGhost) {
+                            touchGhost.style.left = (touch.clientX - 80) + 'px';
+                            touchGhost.style.top = (touch.clientY - 28) + 'px';
+                        }
+                        highlightAtPoint(touch.clientX, touch.clientY);
+                    }
+                    return;
+                }
+
+                // Case B: Horizontal vs Vertical Scroll Coordination inside .routine-board
+                if (activeBoard) {
+                    var totalDx = touch.clientX - startX;
+                    var totalDy = touch.clientY - startY;
+
+                    if (boardScrollLock === null) {
+                        if (Math.abs(totalDx) > 7 && Math.abs(totalDx) > Math.abs(totalDy) * 1.1) {
+                            boardScrollLock = 'h';
+                        } else if (Math.abs(totalDy) > 9) {
+                            boardScrollLock = 'v';
+                        }
+                    }
+
+                    if (boardScrollLock === 'h') {
+                        if (e.cancelable) e.preventDefault();
+                        var now = performance.now();
+                        var dt = Math.max(1, now - lastTouchTime);
+                        var stepDx = lastTouchX - touch.clientX;
+                        velocityX = 0.75 * (stepDx / dt) + 0.25 * velocityX;
+                        lastTouchX = touch.clientX;
+                        lastTouchTime = now;
+
+                        activeBoard.scrollLeft = boardStartScrollLeft - totalDx;
+                    }
+                }
+            }, { passive: false });
+
+            function handleTouchFinish(e) {
+                if (touchDragSource) {
+                    if (touchStartedDrag) {
+                        if (touchGhost && touchGhost.parentNode) {
+                            touchGhost.parentNode.removeChild(touchGhost);
+                        }
+                        touchGhost = null;
+
+                        var changedTouch = e.changedTouches && e.changedTouches[0];
+                        if (changedTouch) {
+                            var dropTarget = highlightAtPoint(changedTouch.clientX, changedTouch.clientY);
+                            if (dropTarget) {
+                                dropTarget.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+                            }
+                        }
+                        touchDragSource.dispatchEvent(new Event('dragend', { bubbles: true, cancelable: true }));
+                        cleanupDragState();
+                    }
+                    touchDragSource = null;
+                    touchStartedDrag = false;
+                    return;
+                }
+
+                if (activeBoard && boardScrollLock === 'h') {
+                    var boardRef = activeBoard;
+                    var v = velocityX;
+                    if (Math.abs(v) > 0.12) {
+                        function stepInertia() {
+                            if (Math.abs(v) < 0.04) {
+                                inertiaFrame = null;
+                                return;
+                            }
+                            boardRef.scrollLeft += v * 16;
+                            v *= 0.92;
+                            inertiaFrame = requestAnimationFrame(stepInertia);
+                        }
+                        inertiaFrame = requestAnimationFrame(stepInertia);
+                    }
+                }
+
+                activeBoard = null;
+                boardScrollLock = null;
+            }
+
+            document.addEventListener('touchend', handleTouchFinish, false);
+            document.addEventListener('touchcancel', handleTouchFinish, false);
+        })();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,595 @@
+@using proyectoejercicios.Data
+@using proyectoejercicios.Models
+@using proyectoejercicios.Services
+@inject AppDbContext DbContext
+@inject DragDropState DragState
+@inject RoutineBuilderState RoutineState
+@implements IDisposable
+
+<div class="exercise-catalog">
+    <div class="catalog-header">
+        <h3 class="catalog-title">Catálogo de Ejercicios</h3>
+        <button class="add-btn" @onclick="ToggleAddForm" title="Añadir nuevo ejercicio">
+            <i class="bi bi-plus-lg"></i> Nuevo
+        </button>
+    </div>
+    
+    <div class="controls">
+        <div class="search-filter-row">
+            <input class="search-input" 
+                   type="text" 
+                   placeholder="Buscar ejercicio o grupo..." 
+                   @bind-value="searchTerm" 
+                   @bind-value:event="oninput" />
+
+            <div class="filter-row">
+                <select class="group-select" @bind="selectedGroup">
+                    <option value="">Todos los grupos (@ejercicios.Count)</option>
+                    @foreach (var grupo in AvailableGroups)
+                    {
+                        <option value="@grupo">@grupo (@GetCountForGroup(grupo))</option>
+                    }
+                </select>
+            </div>
+        </div>
+
+        <div class="toggle-row">
+            <button class="toggle-btn @(groupByMuscle ? "active-toggle" : "")" @onclick="ToggleGrouping" title="Agrupar ejercicios por grupo muscular">
+                <i class="bi @(groupByMuscle ? "bi-folder2-open" : "bi-file-earmark-text")"></i> @(groupByMuscle ? "Agrupado" : "Sin agrupar")
+            </button>
+            <button class="toggle-btn" @onclick="ToggleView" title="Cambiar vista cuadrícula o lista">
+                <i class="bi @(isGridView ? "bi-grid-fill" : "bi-list-ul")"></i> @(isGridView ? "Cuadrícula" : "Lista")
+            </button>
+        </div>
+
+        <div class="catalog-drag-tip">
+            <i class="bi bi-grip-vertical"></i> Arrastra desde <i class="bi bi-grip-vertical"></i> o usa <i class="bi bi-geo-alt-fill"></i> Colocar hacia un día
+        </div>
+    </div>
+
+    @if (showAddForm)
+    {
+        <div class="add-form">
+            <h4 class="form-title">Nuevo Ejercicio</h4>
+            <input type="text" placeholder="Nombre del ejercicio" @bind="newExerciseName" class="form-input" />
+            
+            <label class="form-label">Grupo Muscular:</label>
+            <select class="form-select" @bind="newExerciseGroup">
+                @foreach (var g in PredefinedGroups)
+                {
+                    <option value="@g">@g</option>
+                }
+                <option value="Otro">Otro...</option>
+            </select>
+
+            @if (newExerciseGroup == "Otro")
+            {
+                <input type="text" placeholder="Nombre de nuevo grupo muscular" @bind="customExerciseGroup" class="form-input" style="margin-top: 0.35rem;" />
+            }
+
+            <label class="form-label">Imagen del Ejercicio:</label>
+            <div class="image-uploader-box">
+                <div class="image-action-buttons">
+                    <button type="button" class="btn-picker" @onclick="() => PickImage(false)">
+                        <i class="bi bi-image"></i> Elegir Imagen
+                    </button>
+                    <label class="btn-file-label">
+                        <i class="bi bi-folder2-open"></i> Examinar
+                        <InputFile OnChange="(e) => HandleFileInput(e, false)" accept="image/*" style="display:none;" />
+                    </label>
+                </div>
+                <input type="text" 
+                       placeholder="O pegar URL web (https://...)" 
+                       @bind="newExerciseImage" 
+                       @bind:event="oninput" 
+                       class="form-input url-input" />
+
+                @if (!string.IsNullOrWhiteSpace(newExerciseImage))
+                {
+                    <div class="preview-container">
+                        <img src="@ImageHelper.GetImageSrc(newExerciseImage)" alt="Vista previa" class="preview-thumb" onerror="this.style.opacity='0.3'" />
+                        <button type="button" class="btn-clear-img" @onclick="() => newExerciseImage = string.Empty" title="Quitar imagen"><i class="bi bi-x-lg"></i> Quitar</button>
+                    </div>
+                }
+            </div>
+
+            <label class="form-label">Enlace Explicativo / Video (opcional):</label>
+            <input type="text" placeholder="https://youtube.com/... o guía" @bind="newExerciseUrl" class="form-input" />
+
+            <div class="form-actions">
+                <button @onclick="AddExercise" class="btn-save">Guardar</button>
+                <button @onclick="ToggleAddForm" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    }
+
+    @if (editingExerciseId.HasValue)
+    {
+        <div class="add-form edit-form-card">
+            <h4 class="form-title">Editar Ejercicio</h4>
+            <input type="text" placeholder="Nombre del ejercicio" @bind="editExerciseName" class="form-input" />
+            
+            <label class="form-label">Grupo Muscular:</label>
+            <select class="form-select" @bind="editExerciseGroup">
+                @foreach (var g in PredefinedGroups)
+                {
+                    <option value="@g">@g</option>
+                }
+                <option value="Otro">Otro...</option>
+            </select>
+
+            @if (editExerciseGroup == "Otro")
+            {
+                <input type="text" placeholder="Nombre de grupo muscular" @bind="editCustomGroup" class="form-input" style="margin-top: 0.35rem;" />
+            }
+
+            <label class="form-label">Imagen del Ejercicio:</label>
+            <div class="image-uploader-box">
+                <div class="image-action-buttons">
+                    <button type="button" class="btn-picker" @onclick="() => PickImage(true)">
+                        <i class="bi bi-image"></i> Cambiar Imagen
+                    </button>
+                    <label class="btn-file-label">
+                        <i class="bi bi-folder2-open"></i> Examinar
+                        <InputFile OnChange="(e) => HandleFileInput(e, true)" accept="image/*" style="display:none;" />
+                    </label>
+                </div>
+                <input type="text" 
+                       placeholder="O pegar URL web (https://...)" 
+                       @bind="editExerciseImage" 
+                       @bind:event="oninput" 
+                       class="form-input url-input" />
+
+                @if (!string.IsNullOrWhiteSpace(editExerciseImage))
+                {
+                    <div class="preview-container">
+                        <img src="@ImageHelper.GetImageSrc(editExerciseImage)" alt="Vista previa" class="preview-thumb" onerror="this.style.opacity='0.3'" />
+                        <button type="button" class="btn-clear-img" @onclick="() => editExerciseImage = string.Empty" title="Quitar imagen"><i class="bi bi-x-lg"></i> Quitar</button>
+                    </div>
+                }
+            </div>
+
+            <label class="form-label">Enlace Explicativo / Video (opcional):</label>
+            <input type="text" placeholder="https://youtube.com/... o guía" @bind="editExerciseUrl" class="form-input" />
+
+            <div class="form-actions">
+                <button @onclick="SaveEditedExercise" class="btn-save">Guardar Cambios</button>
+                <button @onclick="CancelEdit" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    }
+
+    <div class="catalog-scroll-area">
+        @if (!FilteredEjercicios.Any())
+        {
+            <div class="empty-message">
+                No se encontraron ejercicios con ese criterio.
+            </div>
+        }
+        else if (groupByMuscle)
+        {
+            <div class="grouped-container">
+                @foreach (var group in GroupedEjercicios)
+                {
+                    var isCollapsed = collapsedGroups.Contains(group.Key);
+                    <div class="muscle-group-section">
+                        <div class="muscle-group-header" @onclick="() => ToggleGroupCollapse(group.Key)">
+                            <div class="muscle-group-title">
+                                <span class="collapse-icon"><i class="bi @(isCollapsed ? "bi-chevron-right" : "bi-chevron-down")"></i></span>
+                                <span class="muscle-group-name">@group.Key</span>
+                            </div>
+                            <span class="count-badge">@group.Count()</span>
+                        </div>
+
+                        @if (!isCollapsed)
+                        {
+                            <div class="exercise-list @(isGridView ? "grid-view" : "list-view")">
+                                @foreach (var ejercicio in group)
+                                {
+                                    @RenderExerciseCard(ejercicio)
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="exercise-list @(isGridView ? "grid-view" : "list-view")">
+                @foreach (var ejercicio in FilteredEjercicios)
+                {
+                    @RenderExerciseCard(ejercicio)
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnExerciseSelectedForPlacement { get; set; }
+
+    private List<Ejercicio> ejercicios = new();
+    private string searchTerm = "";
+    private string selectedGroup = "";
+    private bool isGridView = true;
+    private bool groupByMuscle = true;
+    private bool showAddForm = false;
+    private string newExerciseName = "";
+    private string newExerciseGroup = "Pecho";
+    private string customExerciseGroup = "";
+    private HashSet<string> collapsedGroups = new();
+
+    private string newExerciseImage = "";
+    private string newExerciseUrl = "";
+    private int? editingExerciseId = null;
+    private string editExerciseName = "";
+    private string editExerciseGroup = "Pecho";
+    private string editCustomGroup = "";
+    private string editExerciseImage = "";
+    private string editExerciseUrl = "";
+
+    private readonly string[] PredefinedGroups = new[]
+    {
+        "Pecho",
+        "Espalda",
+        "Piernas",
+        "Hombros",
+        "Brazos",
+        "Core",
+        "Cuerpo Completo"
+    };
+
+    private IEnumerable<string> AvailableGroups =>
+        ejercicios
+            .Select(e => string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+            .Distinct()
+            .OrderBy(g => g);
+
+    private int GetCountForGroup(string group) =>
+        ejercicios.Count(e => (string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+            .Equals(group, StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<Ejercicio> FilteredEjercicios
+    {
+        get
+        {
+            var query = ejercicios.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                query = query.Where(e => 
+                    e.Nombre.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    (!string.IsNullOrEmpty(e.GrupoMuscular) && e.GrupoMuscular.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedGroup))
+            {
+                query = query.Where(e => (string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+                    .Equals(selectedGroup, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return query;
+        }
+    }
+
+    private IEnumerable<IGrouping<string, Ejercicio>> GroupedEjercicios =>
+        FilteredEjercicios
+            .GroupBy(e => string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+            .OrderBy(g => g.Key);
+
+    private void ToggleGrouping()
+    {
+        groupByMuscle = !groupByMuscle;
+    }
+
+    private void ToggleGroupCollapse(string groupName)
+    {
+        if (collapsedGroups.Contains(groupName))
+        {
+            collapsedGroups.Remove(groupName);
+        }
+        else
+        {
+            collapsedGroups.Add(groupName);
+        }
+    }
+
+    private void ToggleView()
+    {
+        isGridView = !isGridView;
+    }
+
+    private void ToggleAddForm()
+    {
+        showAddForm = !showAddForm;
+        newExerciseName = "";
+        newExerciseGroup = "Pecho";
+        customExerciseGroup = "";
+        newExerciseImage = "";
+        newExerciseUrl = "";
+        if (showAddForm) CancelEdit();
+    }
+
+    private async Task PickImage(bool isEdit)
+    {
+        var base64 = await ImageHelper.PickImageAsBase64Async();
+        if (!string.IsNullOrEmpty(base64))
+        {
+            if (isEdit)
+                editExerciseImage = base64;
+            else
+                newExerciseImage = base64;
+        }
+    }
+
+    private async Task HandleFileInput(InputFileChangeEventArgs e, bool isEdit)
+    {
+        try
+        {
+            var file = e.File;
+            if (file != null)
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                string contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "image/jpeg" : file.ContentType;
+                string base64 = $"data:{contentType};base64,{Convert.ToBase64String(ms.ToArray())}";
+                if (isEdit)
+                    editExerciseImage = base64;
+                else
+                    newExerciseImage = base64;
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore failure
+        }
+    }
+
+    private void AddExercise()
+    {
+        if (string.IsNullOrWhiteSpace(newExerciseName)) return;
+
+        string finalGroup = newExerciseGroup == "Otro"
+            ? (string.IsNullOrWhiteSpace(customExerciseGroup) ? "General" : customExerciseGroup.Trim())
+            : newExerciseGroup;
+
+        var newExercise = new Ejercicio 
+        { 
+            Nombre = newExerciseName.Trim(), 
+            RutaImagen = newExerciseImage?.Trim() ?? "",
+            GrupoMuscular = finalGroup,
+            UrlExplicacion = newExerciseUrl?.Trim() ?? ""
+        };
+
+        DbContext.Ejercicios.Add(newExercise);
+        DbContext.SaveChanges();
+
+        ejercicios = DbContext.Ejercicios.ToList();
+        ToggleAddForm();
+    }
+
+    private void StartEdit(Ejercicio ejercicio)
+    {
+        showAddForm = false;
+        editingExerciseId = ejercicio.Id;
+        editExerciseName = ejercicio.Nombre;
+        
+        if (PredefinedGroups.Contains(ejercicio.GrupoMuscular))
+        {
+            editExerciseGroup = ejercicio.GrupoMuscular;
+            editCustomGroup = "";
+        }
+        else
+        {
+            editExerciseGroup = "Otro";
+            editCustomGroup = ejercicio.GrupoMuscular;
+        }
+
+        editExerciseImage = ejercicio.RutaImagen ?? "";
+        editExerciseUrl = ejercicio.UrlExplicacion ?? "";
+    }
+
+    private void SaveEditedExercise()
+    {
+        if (!editingExerciseId.HasValue || string.IsNullOrWhiteSpace(editExerciseName)) return;
+
+        var ej = DbContext.Ejercicios.Find(editingExerciseId.Value);
+        if (ej != null)
+        {
+            ej.Nombre = editExerciseName.Trim();
+            ej.GrupoMuscular = editExerciseGroup == "Otro"
+                ? (string.IsNullOrWhiteSpace(editCustomGroup) ? "General" : editCustomGroup.Trim())
+                : editExerciseGroup;
+            ej.RutaImagen = editExerciseImage?.Trim() ?? "";
+            ej.UrlExplicacion = editExerciseUrl?.Trim() ?? "";
+
+            DbContext.SaveChanges();
+
+            foreach (var item in RoutineState.RoutineItems.Where(i => i.EjercicioId == ej.Id))
+            {
+                item.Ejercicio = ej;
+            }
+
+            ejercicios = DbContext.Ejercicios.ToList();
+        }
+
+        CancelEdit();
+    }
+
+    private void CancelEdit()
+    {
+        editingExerciseId = null;
+        editExerciseName = "";
+        editExerciseGroup = "Pecho";
+        editCustomGroup = "";
+        editExerciseImage = "";
+        editExerciseUrl = "";
+    }
+
+    private void DeleteExercise(int id)
+    {
+        var ejercicio = DbContext.Ejercicios.Find(id);
+        if (ejercicio != null)
+        {
+            DbContext.Ejercicios.Remove(ejercicio);
+            DbContext.SaveChanges();
+            ejercicios = DbContext.Ejercicios.ToList();
+            if (editingExerciseId == id)
+            {
+                CancelEdit();
+            }
+        }
+    }
+
+    private int selectedExerciseForAdd = -1;
+
+    private void ToggleDaySelector(int id)
+    {
+        if (selectedExerciseForAdd == id)
+            selectedExerciseForAdd = -1;
+        else
+            selectedExerciseForAdd = id;
+    }
+
+    private void AssignToDay(Ejercicio ejercicio, string diaId)
+    {
+        RoutineState.AddExerciseToDay(ejercicio, diaId);
+        selectedExerciseForAdd = -1;
+        if (OnExerciseSelectedForPlacement.HasDelegate)
+        {
+            _ = OnExerciseSelectedForPlacement.InvokeAsync();
+        }
+    }
+
+    private void StartTapPlaceExercise(Ejercicio ejercicio)
+    {
+        DragState.StartDragExercise(ejercicio.Id, ejercicio.Nombre, tapMode: true);
+        selectedExerciseForAdd = -1;
+        if (OnExerciseSelectedForPlacement.HasDelegate)
+        {
+            _ = OnExerciseSelectedForPlacement.InvokeAsync();
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        ejercicios = DbContext.Ejercicios.ToList();
+        RoutineState.OnStateChanged += StateHasChanged;
+    }
+
+    public void Dispose()
+    {
+        RoutineState.OnStateChanged -= StateHasChanged;
+    }
+
+    private void OnDragStart(Ejercicio ejercicio)
+    {
+        DragState.StartDragExercise(ejercicio.Id, ejercicio.Nombre);
+    }
+
+    private void OnDragEnd()
+    {
+        if (!DragState.IsTapPlacementMode)
+        {
+            DragState.Reset();
+        }
+    }
+
+    RenderFragment RenderExerciseCard(Ejercicio ejercicio) => __builder =>
+    {
+        <div @key="ejercicio.Id"
+             class="exercise-item @(isGridView ? "" : "list-item-card")"
+             draggable="true"
+             @ondragstart="() => OnDragStart(ejercicio)"
+             @ondragend="OnDragEnd">
+            <div class="card-drag-badge" title="Arrastra desde el ícono hacia un día o posición de la rutina">
+                <span class="drag-grip-icon"><i class="bi bi-grip-vertical"></i></span>
+            </div>
+            <div class="card-action-bar">
+                <button @onclick="() => StartEdit(ejercicio)" @onclick:stopPropagation="true" class="edit-item-btn" title="Editar ejercicio"><i class="bi bi-pencil-fill"></i></button>
+                <button @onclick="() => DeleteExercise(ejercicio.Id)" @onclick:stopPropagation="true" class="delete-item-btn" title="Eliminar ejercicio"><i class="bi bi-trash3-fill"></i></button>
+            </div>
+
+            @if (isGridView)
+            {
+                @if (!string.IsNullOrWhiteSpace(ejercicio.RutaImagen))
+                {
+                    <img src="@ImageHelper.GetImageSrc(ejercicio.RutaImagen)" alt="@ejercicio.Nombre" class="exercise-img" draggable="false" onerror="this.style.display='none'" />
+                }
+                else
+                {
+                    <div class="exercise-img-placeholder"><i class="bi bi-lightning-charge-fill"></i></div>
+                }
+                <div class="exercise-info">
+                    <span class="exercise-name">@ejercicio.Nombre</span>
+                    <span class="muscle-tag">@ejercicio.GrupoMuscular</span>
+                    @if (!string.IsNullOrWhiteSpace(ejercicio.UrlExplicacion))
+                    {
+                        <a href="@GetNavUrl(ejercicio.UrlExplicacion)" target="_blank" draggable="false" @onclick:stopPropagation="true" class="exercise-link-pill" title="Abrir video / guía explicativa">
+                            <i class="bi bi-link-45deg"></i> Video / Guía
+                        </a>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="list-row-content">
+                    @if (!string.IsNullOrWhiteSpace(ejercicio.RutaImagen))
+                    {
+                        <img src="@ImageHelper.GetImageSrc(ejercicio.RutaImagen)" alt="@ejercicio.Nombre" class="exercise-img-list" draggable="false" onerror="this.style.display='none'" />
+                    }
+                    else
+                    {
+                        <div class="exercise-img-placeholder-list"><i class="bi bi-lightning-charge-fill"></i></div>
+                    }
+                    <div class="exercise-info">
+                        <span class="exercise-name">@ejercicio.Nombre</span>
+                        <span class="muscle-tag">@ejercicio.GrupoMuscular</span>
+                        @if (!string.IsNullOrWhiteSpace(ejercicio.UrlExplicacion))
+                        {
+                            <a href="@GetNavUrl(ejercicio.UrlExplicacion)" target="_blank" draggable="false" @onclick:stopPropagation="true" class="exercise-link-pill" title="Abrir video / guía explicativa">
+                                <i class="bi bi-link-45deg"></i> Video / Guía
+                            </a>
+                        }
+                    </div>
+                </div>
+            }
+            
+            <div class="assign-section" @onclick:stopPropagation="true">
+                <div class="assign-btn-row">
+                    <button type="button" @onclick="() => StartTapPlaceExercise(ejercicio)" @onclick:stopPropagation="true" class="tap-place-btn" title="Toca para elegir la posición exacta en la rutina">
+                        <i class="bi bi-geo-alt-fill"></i> Colocar
+                    </button>
+                    <button type="button" @onclick="() => ToggleDaySelector(ejercicio.Id)" @onclick:stopPropagation="true" class="assign-toggle-btn @(selectedExerciseForAdd == ejercicio.Id ? "active-assign" : "")">
+                        <i class="bi @(selectedExerciseForAdd == ejercicio.Id ? "bi-chevron-up" : "bi-plus-lg")"></i> @(selectedExerciseForAdd == ejercicio.Id ? "Cerrar" : "Día")
+                    </button>
+                </div>
+                @if (selectedExerciseForAdd == ejercicio.Id)
+                {
+                    <div class="day-options-list" @onclick:stopPropagation="true">
+                        @foreach (var dia in RoutineState.Dias)
+                        {
+                            <button type="button" @onclick="() => AssignToDay(ejercicio, dia.Id)" @onclick:stopPropagation="true" class="day-option-btn">
+                                @dia.Nombre
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    };
+
+    private static string GetNavUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "#";
+        var trimmed = url.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+        return $"https://{trimmed}";
+    }
+}

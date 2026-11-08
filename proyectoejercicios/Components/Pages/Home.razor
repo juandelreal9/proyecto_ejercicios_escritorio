@@ -1,0 +1,352 @@
+@page "/"
+@using proyectoejercicios.Services
+@using proyectoejercicios.Application.Services.Pdf
+@using System.IO
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+@inject PdfGeneratorService PdfService
+@inject ThemeService ThemeState
+@inject RoutineBuilderState RoutineState
+@inject DragDropState DragState
+
+<div class="app-shell @(isSplitTabletMode ? "mode-split-tablet" : "mode-mobile-tabs") @(isCatalogCollapsed && isSplitTabletMode ? "catalog-collapsed" : "") @(DragState.IsTapPlacementMode ? "tap-placement-active" : "")">
+    @* Sidebar / Drawer Catalog *@
+    <div class="catalog-container @((isSplitTabletMode && !isCatalogCollapsed) || (!isSplitTabletMode && (activeMobileTab == "catalog" || showCatalogDrawer)) ? "mobile-visible" : "mobile-hidden")">
+        @if (!isSplitTabletMode && showCatalogDrawer)
+        {
+            <div class="mobile-drawer-backdrop" @onclick="CloseCatalogDrawer"></div>
+        }
+        <div class="catalog-drawer-sheet">
+            @if (!isSplitTabletMode && showCatalogDrawer)
+            {
+                <div class="drawer-sheet-header">
+                    <span><i class="bi bi-lightning-charge-fill"></i> Selecciona o arrastra un ejercicio</span>
+                    <button type="button" class="drawer-close-btn" @onclick="CloseCatalogDrawer"><i class="bi bi-x-lg"></i> Cerrar</button>
+                </div>
+            }
+            <proyectoejercicios.Components.ExerciseCatalog OnExerciseSelectedForPlacement="HandleExerciseSelectedFromCatalog" />
+        </div>
+    </div>
+
+    <div class="main-workspace @(activeMobileTab == "routine" || isSplitTabletMode ? "mobile-visible" : "mobile-hidden")">
+        <div class="top-header-bar">
+            <div class="header-title-group">
+                @if (isSplitTabletMode)
+                {
+                    <button type="button"
+                            class="catalog-collapse-btn"
+                            @onclick="ToggleCatalogCollapsed"
+                            title="@(isCatalogCollapsed ? "Mostrar catálogo lateral" : "Ocultar catálogo para ampliar los días")">
+                        <i class="bi @(isCatalogCollapsed ? "bi-caret-right-fill" : "bi-caret-left-fill")"></i> Catálogo
+                    </button>
+                }
+                <h1 class="app-main-title"><i class="bi bi-calendar2-check-fill"></i> Rutinas</h1>
+                <div class="pdf-title-inline-box" title="Título que aparecerá en el encabezado del PDF">
+                    <span class="pdf-title-icon"><i class="bi bi-pencil-square"></i></span>
+                    <input type="text"
+                           class="pdf-title-inline-input"
+                           placeholder="Título del PDF (ej: Mi Plan de Entrenamiento)..."
+                           @bind-value="pdfTitle"
+                           @bind-value:event="oninput" />
+                </div>
+            </div>
+            <div class="header-actions-group">
+                <button type="button" class="layout-mode-btn" @onclick="ToggleLayoutMode" title="Alternar entre vista móvil por pestañas y vista dividida para tablet">
+                    <i class="bi @(isSplitTabletMode ? "bi-phone" : "bi-layout-split")"></i> @(isSplitTabletMode ? "Modo Teléfono" : "Modo Tablet")
+                </button>
+                <button type="button" class="theme-toggle-btn" @onclick="ToggleTheme" title="Cambiar tema claro/oscuro">
+                    <i class="bi @(ThemeState.IsDarkMode ? "bi-sun-fill" : "bi-moon-stars-fill")"></i>
+                </button>
+                <button type="button" class="generate-pdf-btn" @onclick="OpenPdfTitleDialog">
+                    <i class="bi bi-file-earmark-pdf-fill"></i> PDF
+                </button>
+            </div>
+        </div>
+
+        @if (DragState.IsDragging)
+        {
+            <div class="placement-banner">
+                <div class="placement-banner-info">
+                    <span class="placement-pulse"><i class="bi bi-geo-alt-fill"></i></span>
+                    <span>Colocando: <strong>@(DragState.DraggedTitle ?? "Elemento")</strong> — Toca o suelta en cualquier posición (#1, #2...) de un día</span>
+                </div>
+                <button type="button" class="placement-cancel-btn" @onclick="CancelPlacement"><i class="bi bi-x-lg"></i> Cancelar</button>
+            </div>
+        }
+
+        @* Day Selector & Horizontal Scroll Navigation Bar *@
+        <div class="day-nav-toolbar">
+            <div class="mobile-day-selector-bar">
+                <button type="button"
+                        class="day-filter-pill @(string.IsNullOrEmpty(selectedDiaFilter) && string.IsNullOrEmpty(highlightedDiaId) ? "active" : "")"
+                        @onclick='() => SelectDayFilter("")'>
+                    <i class="bi bi-calendar3"></i> Todos (@RoutineState.Dias.Count)
+                </button>
+                @foreach (var dia in RoutineState.Dias)
+                {
+                    var count = RoutineState.RoutineItems.Count(i => i.DiaId == dia.Id);
+                    var isActive = isSplitTabletMode
+                        ? highlightedDiaId == dia.Id
+                        : selectedDiaFilter == dia.Id;
+                    <button type="button"
+                            class="day-filter-pill @(isActive ? "active" : "")"
+                            @onclick="() => SelectDayFilter(dia.Id)">
+                        @dia.Nombre <span class="pill-count">@count</span>
+                    </button>
+                }
+                <button type="button" class="day-filter-add-btn" @onclick="AddDayAndScroll">
+                    <i class="bi bi-plus-lg"></i> Día
+                </button>
+            </div>
+
+            @if (isSplitTabletMode || string.IsNullOrEmpty(selectedDiaFilter))
+            {
+                <div class="board-scroll-arrows" title="Desplazar días horizontalmente">
+                    <button type="button" class="board-arrow-btn" @onclick="() => ScrollBoardHorizontal(-300)" title="Desplazar a la izquierda"><i class="bi bi-chevron-left"></i></button>
+                    <button type="button" class="board-arrow-btn" @onclick="() => ScrollBoardHorizontal(300)" title="Desplazar a la derecha"><i class="bi bi-chevron-right"></i></button>
+                </div>
+            }
+        </div>
+
+        <div class="board-viewport">
+            <proyectoejercicios.Components.RoutineBoard SelectedDiaId="@(isSplitTabletMode ? "" : selectedDiaFilter)" />
+        </div>
+    </div>
+
+    @* Bottom Navigation Bar for Mobile Tabs Mode *@
+    <nav class="mobile-bottom-nav">
+        <button type="button"
+                class="bottom-nav-item @(activeMobileTab == "routine" && !showCatalogDrawer ? "active" : "")"
+                @onclick='() => SwitchMobileTab("routine")'>
+            <span class="nav-icon"><i class="bi bi-calendar-week"></i></span>
+            <span class="nav-label">Rutina</span>
+        </button>
+        <button type="button"
+                class="bottom-nav-item @(activeMobileTab == "catalog" ? "active" : "")"
+                @onclick='() => SwitchMobileTab("catalog")'>
+            <span class="nav-icon"><i class="bi bi-grid-fill"></i></span>
+            <span class="nav-label">Catálogo</span>
+        </button>
+        <button type="button"
+                class="bottom-nav-item"
+                @onclick="StartQuickLabelPlacement">
+            <span class="nav-icon"><i class="bi bi-tag-fill"></i></span>
+            <span class="nav-label">+ Etiqueta</span>
+        </button>
+        <button type="button"
+                class="bottom-nav-item"
+                @onclick="OpenPdfTitleDialog">
+            <span class="nav-icon"><i class="bi bi-file-earmark-pdf-fill"></i></span>
+            <span class="nav-label">Crear PDF</span>
+        </button>
+    </nav>
+</div>
+
+@if (showPdfModal)
+{
+    <div class="pdf-modal-backdrop" @onclick="ClosePdfTitleDialog">
+        <div class="pdf-modal-card" @onclick:stopPropagation="true">
+            <div class="pdf-modal-header">
+                <h3><i class="bi bi-file-earmark-pdf-fill"></i> Configurar Título del PDF</h3>
+                <button type="button" class="pdf-modal-close" @onclick="ClosePdfTitleDialog"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <p class="pdf-modal-subtitle">
+                Escribe el título personalizado que encabezará tu documento PDF antes de generarlo:
+            </p>
+            <input type="text"
+                   class="pdf-modal-input"
+                   placeholder="Ej: Rutina Hipertrofia - Semana 1"
+                   @bind-value="pdfTitle"
+                   @bind-value:event="oninput" />
+            <div class="pdf-modal-actions">
+                <button type="button" class="pdf-modal-cancel-btn" @onclick="ClosePdfTitleDialog">
+                    Cancelar
+                </button>
+                <button type="button" class="pdf-modal-confirm-btn" @onclick="ConfirmAndGeneratePdf">
+                    <i class="bi bi-file-earmark-arrow-down-fill"></i> Crear y Exportar PDF
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string pdfTitle = "Mi Plan de Entrenamiento";
+    private bool showPdfModal = false;
+    private string activeMobileTab = "routine";
+    private bool isSplitTabletMode = true;
+    private bool isCatalogCollapsed = false;
+    private bool showCatalogDrawer = false;
+    private string selectedDiaFilter = "";
+    private string highlightedDiaId = "";
+
+    private async Task ToggleTheme()
+    {
+        await ThemeState.ToggleThemeAsync();
+    }
+
+    private void ToggleLayoutMode()
+    {
+        isSplitTabletMode = !isSplitTabletMode;
+        showCatalogDrawer = false;
+        if (isSplitTabletMode)
+        {
+            selectedDiaFilter = "";
+            isCatalogCollapsed = false;
+        }
+    }
+
+    private void ToggleCatalogCollapsed()
+    {
+        isCatalogCollapsed = !isCatalogCollapsed;
+    }
+
+    private void SwitchMobileTab(string tab)
+    {
+        activeMobileTab = tab;
+        showCatalogDrawer = false;
+    }
+
+    private void CloseCatalogDrawer()
+    {
+        showCatalogDrawer = false;
+    }
+
+    private async Task SelectDayFilter(string diaId)
+    {
+        if (isSplitTabletMode)
+        {
+            selectedDiaFilter = "";
+            highlightedDiaId = diaId;
+            await JSRuntime.InvokeVoidAsync("scrollToDayColumn", diaId);
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(diaId))
+            {
+                selectedDiaFilter = "";
+                highlightedDiaId = "";
+                await JSRuntime.InvokeVoidAsync("scrollToDayColumn", "");
+            }
+            else
+            {
+                selectedDiaFilter = selectedDiaFilter == diaId ? "" : diaId;
+            }
+        }
+    }
+
+    private async Task AddDayAndScroll()
+    {
+        RoutineState.AddDay();
+        var lastDia = RoutineState.Dias.LastOrDefault();
+        if (lastDia != null)
+        {
+            if (isSplitTabletMode || string.IsNullOrEmpty(selectedDiaFilter))
+            {
+                highlightedDiaId = lastDia.Id;
+                await Task.Delay(50);
+                await JSRuntime.InvokeVoidAsync("scrollToDayColumn", lastDia.Id);
+            }
+            else
+            {
+                selectedDiaFilter = lastDia.Id;
+            }
+        }
+    }
+
+    private async Task ScrollBoardHorizontal(int deltaX)
+    {
+        await JSRuntime.InvokeVoidAsync("scrollRoutineBoardBy", deltaX);
+    }
+
+    private void HandleExerciseSelectedFromCatalog()
+    {
+        activeMobileTab = "routine";
+        showCatalogDrawer = false;
+        StateHasChanged();
+    }
+
+    private void StartQuickLabelPlacement()
+    {
+        DragState.StartDragNewLabel("Nota / Indicación", tapMode: true);
+        activeMobileTab = "routine";
+        showCatalogDrawer = false;
+    }
+
+    private void CancelPlacement()
+    {
+        DragState.Reset();
+    }
+
+    protected override void OnInitialized()
+    {
+        ThemeState.OnThemeChanged += StateHasChanged;
+        RoutineState.OnStateChanged += StateHasChanged;
+        DragState.OnDragStateChanged += StateHasChanged;
+    }
+
+    public void Dispose()
+    {
+        ThemeState.OnThemeChanged -= StateHasChanged;
+        RoutineState.OnStateChanged -= StateHasChanged;
+        DragState.OnDragStateChanged -= StateHasChanged;
+    }
+
+    private async Task OpenPdfTitleDialog()
+    {
+        if (!RoutineState.RoutineItems.Any())
+        {
+            await JSRuntime.InvokeVoidAsync("alert", "Agrega al menos un ejercicio o etiqueta a la rutina antes de generar el PDF.");
+            return;
+        }
+        showPdfModal = true;
+    }
+
+    private void ClosePdfTitleDialog()
+    {
+        showPdfModal = false;
+    }
+
+    private async Task ConfirmAndGeneratePdf()
+    {
+        showPdfModal = false;
+        await GenerateAndSharePdf();
+    }
+
+    private async Task GenerateAndSharePdf()
+    {
+        try
+        {
+            var items = RoutineState.RoutineItems;
+            if (!items.Any()) return;
+
+            string finalTitle = string.IsNullOrWhiteSpace(pdfTitle)
+                ? "Mi Plan de Entrenamiento"
+                : pdfTitle.Trim();
+
+            var pdfBytes = PdfService.GenerateRoutinePdf(items, RoutineState.Dias, finalTitle);
+            if (pdfBytes == null || pdfBytes.Length == 0) return;
+            
+            string safeFileTitle = string.Join("_", finalTitle.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+            if (string.IsNullOrWhiteSpace(safeFileTitle))
+            {
+                safeFileTitle = "Rutina";
+            }
+
+            string fileName = $"{safeFileTitle}_{DateTime.Now:yyyyMMdd_HHmmss}.pdf";
+            string filePath = Path.Combine(FileSystem.CacheDirectory, fileName);
+            
+            await File.WriteAllBytesAsync(filePath, pdfBytes);
+
+            await Share.Default.RequestAsync(new ShareFileRequest
+            {
+                Title = $"Compartir o Guardar: {finalTitle}",
+                File = new ShareFile(filePath)
+            });
+        }
+        catch (Exception ex)
+        {
+            await JSRuntime.InvokeVoidAsync("alert", $"Error al generar el PDF: {ex.Message}");
+        }
+    }
+}

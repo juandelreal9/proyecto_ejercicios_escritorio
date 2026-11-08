@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Creador Rápido de Rutinas - Escritorio</title>
+    <base href="/" />
+    <link rel="stylesheet" href="lib/bootstrap-icons/font/bootstrap-icons.min.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="proyectoejerciciosescritorio.styles.css" />
+    <link rel="icon" href="data:,">
+</head>
+
+<body>
+    <div id="app">Cargando aplicación de escritorio...</div>
+
+    <div id="blazor-error-ui" data-nosnippet>
+        Ha ocurrido un error inesperado.
+        <a href="." class="reload">Recargar</a>
+        <span class="dismiss"><i class="bi bi-x-lg"></i></span>
+    </div>
+
+    <script src="_framework/blazor.webview.js" autostart="false"></script>
+
+    <script>
+        window.setTheme = function (isDark) {
+            if (isDark) {
+                document.body.classList.add('dark-theme');
+            } else {
+                document.body.classList.remove('dark-theme');
+            }
+        };
+
+        window.focusElementById = function (elementId, selectAll) {
+            requestAnimationFrame(function () {
+                var el = document.getElementById(elementId);
+                if (el) {
+                    el.focus();
+                    if (selectAll && typeof el.select === 'function') {
+                        el.select();
+                    }
+                }
+            });
+        };
+
+        window.scrollDayIntoView = function (diaId) {
+            requestAnimationFrame(function () {
+                var el = document.getElementById('desktop-day-' + diaId);
+                if (el && typeof el.scrollIntoView === 'function') {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+                }
+            });
+        };
+
+        window._commandBindings = [
+            { CommandId: 'SHIFT_RIGHT', Key: 'Shift', Code: 'ShiftRight', Display: 'Shift Der' },
+            { CommandId: 'LABEL', Key: '-', Code: 'Minus', Display: '-' },
+            { CommandId: 'NEXT_DAY', Key: '¿', Code: 'Equal', Display: '¿' },
+            { CommandId: 'ENTER', Key: 'Enter', Code: 'Enter', Display: 'Enter ↵' }
+        ];
+
+        window._capturingCommandId = null;
+
+        window.loadSavedCommandBindings = function () {
+            try {
+                return localStorage.getItem('rutinas_desktop_keybindings_v1');
+            } catch (e) {
+                return null;
+            }
+        };
+
+        window.updateCommandBindings = function (json) {
+            try {
+                var parsed = JSON.parse(json);
+                if (Array.isArray(parsed)) {
+                    window._commandBindings = parsed;
+                    localStorage.setItem('rutinas_desktop_keybindings_v1', json);
+                }
+            } catch (e) { }
+        };
+
+        window.startListeningForCommandKey = function (commandId) {
+            window._capturingCommandId = commandId;
+        };
+
+        window.cancelListeningForCommandKey = function () {
+            window._capturingCommandId = null;
+        };
+
+        function formatFriendlyKeyDisplay(e) {
+            if (e.code === 'ShiftRight') return 'Shift Der';
+            if (e.code === 'ShiftLeft') return 'Shift Izq';
+            if (e.code === 'ControlRight') return 'Ctrl Der';
+            if (e.code === 'ControlLeft') return 'Ctrl Izq';
+            if (e.code === 'AltRight') return 'Alt Der';
+            if (e.code === 'AltLeft') return 'Alt Izq';
+            if (e.code === 'Space' || e.key === ' ') return 'Espacio';
+            if (e.key === 'Enter') return 'Enter ↵';
+            if (e.key === 'Tab') return 'Tab ⇥';
+            if (e.key === 'Backspace') return 'Backspace ⌫';
+            if (e.key === 'ArrowUp') return 'Flecha ↑';
+            if (e.key === 'ArrowDown') return 'Flecha ↓';
+            if (e.key === 'ArrowLeft') return 'Flecha ←';
+            if (e.key === 'ArrowRight') return 'Flecha →';
+            if (e.key && e.key.length === 1) return e.key.toUpperCase();
+            return e.key || e.code;
+        }
+
+        function isNonPrintableKey(e) {
+            return e.key === 'Shift' ||
+                   e.key === 'Control' ||
+                   e.key === 'Alt' ||
+                   e.key === 'Tab' ||
+                   e.key === 'Capslock' ||
+                   (e.key && /^F\d{1,2}$/i.test(e.key));
+        }
+
+        function eventMatchesBinding(e, binding) {
+            if (!binding) return false;
+
+            // Exact code match for modifier keys with left/right distinction
+            if (binding.Code === 'ShiftRight' || binding.Code === 'ShiftLeft' ||
+                binding.Code === 'ControlRight' || binding.Code === 'ControlLeft' ||
+                binding.Code === 'AltRight' || binding.Code === 'AltLeft') {
+                return e.code === binding.Code;
+            }
+
+            // Default "¿" compatibility across Spanish / LATAM keyboards
+            if (binding.Key === '¿') {
+                if (e.key === '¿' || e.key === '¡' || e.code === 'Equal') return true;
+            }
+
+            // Default "-" compatibility across main keyboard and numpad
+            if (binding.Key === '-') {
+                if (e.key === '-' || e.code === 'NumpadSubtract') return true;
+            }
+
+            if (binding.Key && e.key) {
+                if (e.key.toLowerCase() === binding.Key.toLowerCase()) return true;
+            }
+
+            if (binding.Code && e.code && binding.Code === e.code && (!e.key || e.key === 'Dead' || e.key === 'Unidentified')) {
+                return true;
+            }
+
+            return false;
+        }
+
+        window.registerDesktopCommandHotkeys = function (dotNetHelper) {
+            if (window._desktopKeyHandler) {
+                window.removeEventListener('keydown', window._desktopKeyHandler, true);
+            }
+
+            window._desktopKeyHandler = function (e) {
+                if (!dotNetHelper) return;
+
+                // 1. If user is currently capturing a new shortcut key in Settings:
+                if (window._capturingCommandId) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (e.key === 'Escape') {
+                        window._capturingCommandId = null;
+                        dotNetHelper.invokeMethodAsync('OnCancelCaptureCommandKey');
+                        return;
+                    }
+
+                    var cmdId = window._capturingCommandId;
+                    window._capturingCommandId = null;
+                    var display = formatFriendlyKeyDisplay(e);
+                    dotNetHelper.invokeMethodAsync('OnCapturedCommandKey', cmdId, e.key || '', e.code || '', display);
+                    return;
+                }
+
+                var active = document.activeElement;
+                var isModalOrCatalogInput = active && active.closest && active.closest('.catalog-manager-panel, .pdf-modal-card, .settings-modal-card');
+                if (isModalOrCatalogInput) {
+                    return;
+                }
+
+                var isCommandInput = active && active.hasAttribute && active.hasAttribute('data-command-input');
+                var isRegularEditInput = active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA') && !isCommandInput;
+
+                var bindings = window._commandBindings || [];
+                var exBinding = bindings.find(function (b) { return b.CommandId === 'SHIFT_RIGHT'; });
+                var lblBinding = bindings.find(function (b) { return b.CommandId === 'LABEL'; });
+                var nextDayBinding = bindings.find(function (b) { return b.CommandId === 'NEXT_DAY'; });
+                var enterBinding = bindings.find(function (b) { return b.CommandId === 'ENTER'; });
+
+                // If inside a command input and user presses their configured Selection key (e.g. Enter or custom key):
+                if (isCommandInput && eventMatchesBinding(e, enterBinding)) {
+                    // If the key is NOT standard Enter, intercept it here and trigger ENTER command
+                    if (e.key !== 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'ENTER');
+                        return;
+                    }
+                }
+
+                // Non-printable shortcut (like Right Shift, Right Ctrl, F-keys) works anytime outside catalog/modals
+                if (eventMatchesBinding(e, exBinding) && isNonPrintableKey(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'SHIFT_RIGHT');
+                    return;
+                }
+
+                if (isRegularEditInput) {
+                    return;
+                }
+
+                var commandInputType = isCommandInput ? active.getAttribute('data-command-input') : '';
+                var currentVal = isCommandInput ? (active.value || '') : '';
+
+                // When waiting for a command OR when exercise search input is empty:
+                if (!isCommandInput || (commandInputType === 'exercise' && currentVal.length === 0)) {
+                    if (eventMatchesBinding(e, exBinding) && !isCommandInput) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'SHIFT_RIGHT');
+                        return;
+                    }
+                    if (eventMatchesBinding(e, nextDayBinding)) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'NEXT_DAY');
+                        return;
+                    }
+                    if (eventMatchesBinding(e, lblBinding)) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'LABEL');
+                        return;
+                    }
+                }
+
+                if (!isCommandInput && eventMatchesBinding(e, enterBinding)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dotNetHelper.invokeMethodAsync('HandleGlobalCommandKey', 'ENTER');
+                }
+            };
+
+            window.addEventListener('keydown', window._desktopKeyHandler, true);
+        };
+    </script>
+</body>
+</html>

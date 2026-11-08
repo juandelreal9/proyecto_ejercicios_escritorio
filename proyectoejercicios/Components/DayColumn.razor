@@ -1,0 +1,522 @@
+@using proyectoejercicios.Models
+@using proyectoejercicios.Services
+@using proyectoejercicios.Data
+@inject DragDropState DragState
+@inject RoutineBuilderState RoutineState
+@inject AppDbContext DbContext
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div id="day-col-@Dia.Id"
+     class="day-column @(IsSingleDayMode ? "single-day-column" : "")"
+     ondragover="event.preventDefault();"
+     ondragenter="event.preventDefault();"
+     @ondrop="OnDropColumn"
+     @ondrop:preventDefault="true">
+    
+    <div class="day-header-container">
+        @if (isEditing)
+        {
+            <input type="text"
+                   @bind-value="Dia.Nombre"
+                   @bind-value:event="oninput"
+                   @onblur="FinishEditing"
+                   class="day-title-input" />
+        }
+        else
+        {
+            <div class="day-title-wrap" @onclick="StartEditing" title="Toca para renombrar el día">
+                <h3 class="day-title">@Dia.Nombre</h3>
+                <span class="day-item-count">@OrderedItems.Count</span>
+            </div>
+        }
+        
+        <button class="delete-column-btn" title="Eliminar Día" @onclick="DeleteColumn"><i class="bi bi-trash3"></i></button>
+    </div>
+    
+    <div class="items-list">
+        @if (!OrderedItems.Any())
+        {
+            <div class="empty-dropzone @(DragState.IsDragging ? "tap-ready-zone" : "")"
+                 ondragover="event.preventDefault();"
+                 ondragenter="event.preventDefault();"
+                 @ondrop="() => OnDropAtSlot(0)"
+                 @ondrop:stopPropagation="true"
+                 @ondrop:preventDefault="true"
+                 @onclick="() => OnTapSlot(0)">
+                <div class="empty-dropzone-icon"><i class="bi bi-inbox-fill"></i></div>
+                <div class="empty-dropzone-title">
+                    @(DragState.IsDragging ? "Toca o suelta aquí para colocar en " + Dia.Nombre : "Arrastra o coloca un ejercicio o etiqueta aquí")
+                </div>
+                <div class="empty-dropzone-subtitle">Desde el catálogo, otro día o el botón de etiqueta</div>
+            </div>
+        }
+        else
+        {
+            @* Initial drop slot before position #1 *@
+            <div @key="@($"slot-0")"
+                 class="drop-slot @(DragState.IsDragging ? "tap-slot-visible" : "")"
+                 ondragover="event.preventDefault();"
+                 ondragenter="event.preventDefault();"
+                 @ondrop="() => OnDropAtSlot(0)"
+                 @ondrop:stopPropagation="true"
+                 @ondrop:preventDefault="true"
+                 @onclick="() => OnTapSlot(0)">
+                <span class="drop-slot-label"><i class="bi bi-plus-circle"></i> Colocar aquí (Posición #1)</span>
+            </div>
+
+            @for (int i = 0; i < OrderedItems.Count; i++)
+            {
+                var index = i;
+                var item = OrderedItems[index];
+                var nextSlotIndex = index + 1;
+                var isFirst = index == 0;
+                var isLast = index == OrderedItems.Count - 1;
+
+                <div @key="item.Id"
+                     class="routine-item @(item.EsEtiqueta ? "routine-label-item" : "") @(DragState.DraggedItemId == item.Id ? "is-selected-for-move" : "")"
+                     draggable="true"
+                     @ondragstart="() => OnDragStartItem(item, index)"
+                     @ondragend="OnDragEnd"
+                     ondragover="event.preventDefault();"
+                     ondragenter="event.preventDefault();"
+                     @ondrop="() => OnDropOnCard(index)"
+                     @ondrop:stopPropagation="true"
+                     @ondrop:preventDefault="true">
+
+                    @if (item.EsEtiqueta)
+                    {
+                        <div class="item-top-bar label-top-bar">
+                            <div class="drag-handle-group"
+                                 @onclick="() => StartTapMoveItem(item, index)"
+                                 title="Arrastra desde el ícono o toca aquí para relocalizar la etiqueta">
+                                <span class="drag-grip"><i class="bi bi-grip-vertical"></i></span>
+                                <span class="position-badge label-pos-badge">#@(index + 1)</span>
+                                <span class="label-badge-tag"><i class="bi bi-tag-fill"></i> Etiqueta</span>
+                            </div>
+                            <div class="item-quick-actions" @onclick:stopPropagation="true">
+                                <button type="button" class="move-step-btn" disabled="@isFirst" @onclick="() => MoveUp(item.Id)" title="Subir posición"><i class="bi bi-arrow-up"></i></button>
+                                <button type="button" class="move-step-btn" disabled="@isLast" @onclick="() => MoveDown(item.Id)" title="Bajar posición"><i class="bi bi-arrow-down"></i></button>
+                                <button type="button" class="duplicate-btn" @onclick="() => DuplicateItem(item.Id)" title="Duplicar etiqueta"><i class="bi bi-files"></i> Duplicar</button>
+                                <button type="button" class="move-day-btn @(movingItemId == item.Id ? "active" : "")" @onclick="() => ToggleMoveMenu(item.Id)" title="Relocalizar o duplicar en otra posición/día"><i class="bi bi-arrow-left-right"></i></button>
+                                <button type="button" class="delete-btn" title="Eliminar etiqueta" @onclick="() => RoutineState.RemoveItem(item.Id)"><i class="bi bi-x-lg"></i></button>
+                            </div>
+                        </div>
+                        <div class="label-input-row" @onclick:stopPropagation="true">
+                            <input type="text"
+                                   draggable="true"
+                                   ondragstart="event.preventDefault(); event.stopPropagation();"
+                                   @bind-value="item.TextoEtiqueta"
+                                   @bind-value:event="oninput"
+                                   class="label-text-input"
+                                   placeholder="Ej: Superserie, Calentamiento, Descanso 90s..." />
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="item-top-bar">
+                            <div class="drag-handle-group"
+                                 @onclick="() => StartTapMoveItem(item, index)"
+                                 title="Arrastra desde el ícono o toca para mover a otra posición o día">
+                                <span class="drag-grip"><i class="bi bi-grip-vertical"></i></span>
+                                <span class="position-badge">#@(index + 1)</span>
+                                <span class="drag-hint-text">Mover</span>
+                            </div>
+                            <div class="item-quick-actions" @onclick:stopPropagation="true">
+                                <button type="button" class="move-step-btn" disabled="@isFirst" @onclick="() => MoveUp(item.Id)" title="Subir una posición"><i class="bi bi-arrow-up"></i></button>
+                                <button type="button" class="move-step-btn" disabled="@isLast" @onclick="() => MoveDown(item.Id)" title="Bajar una posición"><i class="bi bi-arrow-down"></i></button>
+                                <button type="button" class="move-day-btn @(movingItemId == item.Id ? "active" : "")" @onclick="() => ToggleMoveMenu(item.Id)" title="Mover a otro día o posición"><i class="bi bi-arrow-left-right"></i></button>
+                                <button type="button" class="delete-btn" title="Eliminar ejercicio" @onclick="() => RoutineState.RemoveItem(item.Id)"><i class="bi bi-x-lg"></i></button>
+                            </div>
+                        </div>
+
+                        <div class="item-content-wrapper">
+                            @if (!string.IsNullOrWhiteSpace(item.Ejercicio?.RutaImagen))
+                            {
+                                <img src="@ImageHelper.GetImageSrc(item.Ejercicio?.RutaImagen)"
+                                     alt="@item.Ejercicio?.Nombre"
+                                     class="routine-item-img"
+                                     draggable="false"
+                                     onerror="this.style.display='none'" />
+                            }
+                            else
+                            {
+                                <div class="routine-item-img-placeholder"><i class="bi bi-lightning-charge-fill"></i></div>
+                            }
+
+                            <div class="item-body">
+                                <div class="item-header">
+                                    <strong class="item-exercise-name">@item.Ejercicio?.Nombre</strong>
+                                </div>
+                                <div class="item-tag-row">
+                                    @if (!string.IsNullOrWhiteSpace(item.Ejercicio?.GrupoMuscular))
+                                    {
+                                        <div class="item-group-tag">@item.Ejercicio.GrupoMuscular</div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(item.Ejercicio?.UrlExplicacion))
+                                    {
+                                        <a href="@GetNavUrl(item.Ejercicio.UrlExplicacion)"
+                                           target="_blank"
+                                           draggable="false"
+                                           @onclick:stopPropagation="true"
+                                           class="routine-item-link"
+                                           title="Ver explicación o video">
+                                            <i class="bi bi-link-45deg"></i> Video
+                                        </a>
+                                    }
+                                </div>
+                                <div class="item-details" @onclick:stopPropagation="true">
+                                    <label>
+                                        Series:
+                                        <input type="number"
+                                               min="1"
+                                               draggable="true"
+                                               ondragstart="event.preventDefault(); event.stopPropagation();"
+                                               @bind-value="item.Series"
+                                               @bind-value:event="oninput" />
+                                    </label>
+                                    <label>
+                                        Reps:
+                                        <input type="number"
+                                               min="1"
+                                               draggable="true"
+                                               ondragstart="event.preventDefault(); event.stopPropagation();"
+                                               @bind-value="item.Repeticiones"
+                                               @bind-value:event="oninput" />
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    @if (movingItemId == item.Id)
+                    {
+                        <div class="move-popover" @onclick:stopPropagation="true">
+                            <div class="move-popover-title">Relocalizar dentro de @Dia.Nombre:</div>
+                            <div class="move-pos-grid">
+                                @for (int pos = 0; pos < OrderedItems.Count; pos++)
+                                {
+                                    var targetPos = pos;
+                                    <button type="button"
+                                            class="move-pos-pill @(targetPos == index ? "current-pos" : "")"
+                                            disabled="@(targetPos == index)"
+                                            @onclick="() => MoveItemToPosition(item.Id, Dia.Id, targetPos)">
+                                        #@(targetPos + 1)
+                                    </button>
+                                }
+                            </div>
+
+                            <div class="move-popover-title" style="margin-top: 0.4rem;">Mover a otro día:</div>
+                            <div class="move-days-grid">
+                                @foreach (var targetDia in RoutineState.Dias.Where(d => d.Id != Dia.Id))
+                                {
+                                    <button type="button"
+                                            class="move-day-pill"
+                                            @onclick="() => MoveItemToPosition(item.Id, targetDia.Id, -1)">
+                                        <i class="bi bi-arrow-right"></i> @targetDia.Nombre
+                                    </button>
+                                }
+                            </div>
+
+                            @if (item.EsEtiqueta)
+                            {
+                                <div class="move-popover-title" style="margin-top: 0.45rem;">Duplicar esta etiqueta en:</div>
+                                <div class="move-days-grid">
+                                    <button type="button"
+                                            class="duplicate-day-pill"
+                                            @onclick="() => DuplicateItemToTarget(item.Id, Dia.Id, index + 1)">
+                                        <i class="bi bi-files"></i> Aquí (@Dia.Nombre)
+                                    </button>
+                                    @foreach (var targetDia in RoutineState.Dias.Where(d => d.Id != Dia.Id))
+                                    {
+                                        <button type="button"
+                                                class="duplicate-day-pill"
+                                                @onclick="() => DuplicateItemToTarget(item.Id, targetDia.Id, -1)">
+                                            <i class="bi bi-files"></i> @targetDia.Nombre
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                @* Drop slot right after this item *@
+                <div @key="@($"slot-{nextSlotIndex}")"
+                     class="drop-slot @(DragState.IsDragging ? "tap-slot-visible" : "")"
+                     ondragover="event.preventDefault();"
+                     ondragenter="event.preventDefault();"
+                     @ondrop="() => OnDropAtSlot(nextSlotIndex)"
+                     @ondrop:stopPropagation="true"
+                     @ondrop:preventDefault="true"
+                     @onclick="() => OnTapSlot(nextSlotIndex)">
+                    <span class="drop-slot-label"><i class="bi bi-plus-circle"></i> Colocar aquí (Posición #@(nextSlotIndex + 1))</span>
+                </div>
+            }
+        }
+
+        <div class="add-label-toolbar">
+            <div class="add-label-main-row">
+                <button type="button"
+                        class="add-label-btn draggable-label-creator"
+                        draggable="true"
+                        @ondragstart="OnDragStartNewLabel"
+                        @ondragend="OnDragEnd"
+                        @onclick="() => AddLabelAtPosition(-1)"
+                        title="Toca para añadir al final o arrastra este botón a cualquier posición de la rutina">
+                    <i class="bi bi-grip-vertical"></i> <i class="bi bi-plus-lg"></i> Añadir Etiqueta
+                </button>
+                <button type="button"
+                        class="add-label-pos-toggle @(showAddLabelPositions ? "active" : "")"
+                        @onclick="ToggleAddLabelPositionMenu"
+                        title="Elegir en qué posición de la rutina crear la etiqueta">
+                    <i class="bi bi-geo-alt-fill"></i> Posición
+                </button>
+            </div>
+
+            @if (showAddLabelPositions)
+            {
+                <div class="add-label-pos-panel">
+                    <input type="text"
+                           class="new-label-custom-input"
+                           placeholder="Texto de etiqueta (ej: Superserie, Descanso)..."
+                           @bind-value="customNewLabelText"
+                           @bind-value:event="oninput" />
+                    <div class="move-popover-title">Insertar etiqueta en posición:</div>
+                    <div class="move-pos-grid">
+                        <button type="button"
+                                class="move-pos-pill label-insert-pill"
+                                @onclick="() => AddLabelAtPosition(0)">
+                            #1 (Inicio)
+                        </button>
+                        @for (int pos = 1; pos <= OrderedItems.Count; pos++)
+                        {
+                            var insertIdx = pos;
+                            var isEnd = insertIdx == OrderedItems.Count;
+                            <button type="button"
+                                    class="move-pos-pill label-insert-pill"
+                                    @onclick="() => AddLabelAtPosition(insertIdx)">
+                                #@(insertIdx + 1) @(isEnd ? "(Final)" : "")
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public DiaRutina Dia { get; set; } = new();
+    [Parameter] public bool IsSingleDayMode { get; set; } = false;
+
+    private bool isEditing = false;
+    private Guid? movingItemId = null;
+    private bool showAddLabelPositions = false;
+    private string customNewLabelText = "";
+
+    private List<ItemRutina> OrderedItems =>
+        RoutineState.RoutineItems
+            .Where(i => i.DiaId == Dia.Id)
+            .OrderBy(i => i.OrdenVisual)
+            .ToList();
+
+    protected override void OnInitialized()
+    {
+        RoutineState.OnStateChanged += StateHasChanged;
+        DragState.OnDragStateChanged += StateHasChanged;
+    }
+
+    public void Dispose()
+    {
+        RoutineState.OnStateChanged -= StateHasChanged;
+        DragState.OnDragStateChanged -= StateHasChanged;
+    }
+
+    private void StartEditing()
+    {
+        isEditing = true;
+    }
+
+    private void FinishEditing()
+    {
+        isEditing = false;
+        RoutineState.RenameDay(Dia.Id, Dia.Nombre);
+    }
+
+    private async Task DeleteColumn()
+    {
+        if (OrderedItems.Any())
+        {
+            bool confirmed = await JS.InvokeAsync<bool>("confirm", $"¿Estás seguro que deseas eliminar '{Dia.Nombre}' y todos sus ejercicios?");
+            if (!confirmed) return;
+        }
+        RoutineState.RemoveDay(Dia.Id);
+    }
+
+    private void OnDragStartItem(ItemRutina item, int currentIndex)
+    {
+        movingItemId = null;
+        string title = item.EsEtiqueta ? item.TextoEtiqueta : (item.Ejercicio?.Nombre ?? "Ejercicio");
+        DragState.StartDragItem(item.Id, Dia.Id, currentIndex, title);
+    }
+
+    private void StartTapMoveItem(ItemRutina item, int currentIndex)
+    {
+        if (DragState.DraggedItemId == item.Id)
+        {
+            DragState.Reset();
+            return;
+        }
+        movingItemId = null;
+        string title = item.EsEtiqueta ? item.TextoEtiqueta : (item.Ejercicio?.Nombre ?? "Ejercicio");
+        DragState.StartDragItem(item.Id, Dia.Id, currentIndex, title, tapMode: true);
+    }
+
+    private void OnDragStartNewLabel()
+    {
+        string labelText = string.IsNullOrWhiteSpace(customNewLabelText)
+            ? "Nota / Indicación"
+            : customNewLabelText.Trim();
+        DragState.StartDragNewLabel(labelText);
+    }
+
+    private void OnDragEnd()
+    {
+        if (!DragState.IsTapPlacementMode)
+        {
+            DragState.Reset();
+        }
+    }
+
+    private void OnTapSlot(int slotIndex)
+    {
+        if (!DragState.IsDragging) return;
+        OnDropAtSlot(slotIndex);
+    }
+
+    private void OnDropAtSlot(int slotIndex)
+    {
+        if (DragState.IsDraggingNewLabel)
+        {
+            RoutineState.AddLabelToDay(DragState.DraggedLabelText ?? "Nota / Indicación", Dia.Id, slotIndex);
+        }
+        else if (DragState.DraggedEjercicioId.HasValue)
+        {
+            var ejercicio = DbContext.Ejercicios.Find(DragState.DraggedEjercicioId.Value);
+            if (ejercicio != null)
+            {
+                RoutineState.AddExerciseToDay(ejercicio, Dia.Id, slotIndex);
+            }
+        }
+        else if (DragState.DraggedItemId.HasValue)
+        {
+            RoutineState.MoveItemToSlot(DragState.DraggedItemId.Value, Dia.Id, slotIndex);
+        }
+
+        DragState.Reset();
+    }
+
+    private void OnDropOnCard(int cardIndex)
+    {
+        if (DragState.IsDraggingNewLabel)
+        {
+            RoutineState.AddLabelToDay(DragState.DraggedLabelText ?? "Nota / Indicación", Dia.Id, cardIndex);
+        }
+        else if (DragState.DraggedEjercicioId.HasValue)
+        {
+            var ejercicio = DbContext.Ejercicios.Find(DragState.DraggedEjercicioId.Value);
+            if (ejercicio != null)
+            {
+                RoutineState.AddExerciseToDay(ejercicio, Dia.Id, cardIndex);
+            }
+        }
+        else if (DragState.DraggedItemId.HasValue)
+        {
+            RoutineState.MoveItem(DragState.DraggedItemId.Value, Dia.Id, cardIndex);
+        }
+
+        DragState.Reset();
+    }
+
+    private void OnDropColumn()
+    {
+        if (DragState.IsDraggingNewLabel)
+        {
+            RoutineState.AddLabelToDay(DragState.DraggedLabelText ?? "Nota / Indicación", Dia.Id, -1);
+        }
+        else if (DragState.DraggedEjercicioId.HasValue)
+        {
+            var ejercicio = DbContext.Ejercicios.Find(DragState.DraggedEjercicioId.Value);
+            if (ejercicio != null)
+            {
+                RoutineState.AddExerciseToDay(ejercicio, Dia.Id, -1);
+            }
+        }
+        else if (DragState.DraggedItemId.HasValue)
+        {
+            RoutineState.MoveItem(DragState.DraggedItemId.Value, Dia.Id, -1);
+        }
+
+        DragState.Reset();
+    }
+
+    private void MoveUp(Guid itemId)
+    {
+        RoutineState.MoveItemStep(itemId, -1);
+    }
+
+    private void MoveDown(Guid itemId)
+    {
+        RoutineState.MoveItemStep(itemId, 1);
+    }
+
+    private void DuplicateItem(Guid itemId)
+    {
+        RoutineState.DuplicateItem(itemId);
+    }
+
+    private void DuplicateItemToTarget(Guid itemId, string targetDiaId, int targetIndex)
+    {
+        movingItemId = null;
+        RoutineState.DuplicateItem(itemId, targetDiaId, targetIndex);
+    }
+
+    private void ToggleMoveMenu(Guid itemId)
+    {
+        movingItemId = movingItemId == itemId ? null : itemId;
+    }
+
+    private void MoveItemToPosition(Guid itemId, string targetDiaId, int targetIndex)
+    {
+        movingItemId = null;
+        RoutineState.MoveItem(itemId, targetDiaId, targetIndex);
+    }
+
+    private void ToggleAddLabelPositionMenu()
+    {
+        showAddLabelPositions = !showAddLabelPositions;
+    }
+
+    private void AddLabelAtPosition(int targetIndex)
+    {
+        string text = string.IsNullOrWhiteSpace(customNewLabelText)
+            ? "Nota / Indicación"
+            : customNewLabelText.Trim();
+        RoutineState.AddLabelToDay(text, Dia.Id, targetIndex);
+        customNewLabelText = "";
+        showAddLabelPositions = false;
+    }
+
+    private static string GetNavUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "#";
+        var trimmed = url.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+        return $"https://{trimmed}";
+    }
+}

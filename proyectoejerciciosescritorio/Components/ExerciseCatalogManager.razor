@@ -1,0 +1,471 @@
+@inject AppDbContext DbContext
+@inject RoutineBuilderState RoutineState
+
+<div class="catalog-manager-panel">
+    <div class="catalog-panel-header">
+        <div class="catalog-panel-title-wrap">
+            <i class="bi bi-collection-fill"></i>
+            <h3>Catálogo y Grupos Musculares</h3>
+        </div>
+        <button type="button" class="btn-new-exercise" @onclick="ToggleAddForm">
+            <i class="bi @(showAddForm ? "bi-x-lg" : "bi-plus-lg")"></i>
+            @(showAddForm ? "Cerrar" : "Nuevo Ejercicio")
+        </button>
+    </div>
+
+    @if (showAddForm || editingExerciseId.HasValue)
+    {
+        <div class="catalog-editor-card">
+            <h4 class="editor-card-title">
+                <i class="bi @(editingExerciseId.HasValue ? "bi-pencil-square" : "bi-plus-circle-fill")"></i>
+                @(editingExerciseId.HasValue ? "Modificar Ejercicio Existente" : "Crear Nuevo Ejercicio")
+            </h4>
+
+            <label class="editor-label">Nombre del Ejercicio:</label>
+            <input type="text"
+                   class="editor-input"
+                   placeholder="Ej: Press Inclinado con Mancuernas"
+                   @bind="formName"
+                   @bind:event="oninput" />
+
+            <label class="editor-label">Grupo Muscular:</label>
+            <select class="editor-select" @bind="formGroup">
+                @foreach (var g in PredefinedGroups)
+                {
+                    <option value="@g">@g</option>
+                }
+                <option value="Otro">Otro grupo...</option>
+            </select>
+
+            @if (formGroup == "Otro")
+            {
+                <input type="text"
+                       class="editor-input"
+                       style="margin-top: 0.35rem;"
+                       placeholder="Escribe el nombre del grupo muscular..."
+                       @bind="formCustomGroup" />
+            }
+
+            <label class="editor-label">Imagen del Ejercicio:</label>
+            <div class="editor-image-box">
+                <div class="editor-image-actions">
+                    <button type="button" class="btn-img-pick" @onclick="PickImageAsync">
+                        <i class="bi bi-image"></i> Seleccionar archivo
+                    </button>
+                    <label class="btn-img-browse">
+                        <i class="bi bi-folder2-open"></i> Examinar
+                        <InputFile OnChange="HandleFileInputAsync" accept="image/*" style="display:none;" />
+                    </label>
+                </div>
+                <input type="text"
+                       class="editor-input"
+                       placeholder="Ruta local o URL (https://...)"
+                       @bind="formImage"
+                       @bind:event="oninput" />
+
+                @if (!string.IsNullOrWhiteSpace(formImage))
+                {
+                    <div class="editor-img-preview-row">
+                        <img src="@ImageHelper.GetImageSrc(formImage)"
+                             alt="Vista previa"
+                             class="editor-img-preview"
+                             onerror="this.style.opacity='0.3'" />
+                        <button type="button" class="btn-img-remove" @onclick="() => formImage = string.Empty">
+                            <i class="bi bi-trash3"></i> Quitar
+                        </button>
+                    </div>
+                }
+            </div>
+
+            <label class="editor-label">Enlace de Video / Explicación (opcional):</label>
+            <input type="text"
+                   class="editor-input"
+                   placeholder="https://youtube.com/..."
+                   @bind="formUrl" />
+
+            <div class="editor-actions-row">
+                <button type="button" class="btn-editor-save" @onclick="SaveExercise">
+                    <i class="bi bi-check-lg"></i> @(editingExerciseId.HasValue ? "Guardar Cambios" : "Crear Ejercicio")
+                </button>
+                <button type="button" class="btn-editor-cancel" @onclick="CancelForm">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    }
+
+    <div class="catalog-filters">
+        <div class="search-box-wrap">
+            <i class="bi bi-search"></i>
+            <input type="text"
+                   class="catalog-search-input"
+                   placeholder="Filtrar catálogo por nombre o grupo..."
+                   @bind="searchQuery"
+                   @bind:event="oninput" />
+            @if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                <button type="button" class="btn-clear-search" @onclick="() => searchQuery = string.Empty" title="Limpiar búsqueda">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            }
+        </div>
+
+        <div class="group-filter-controls-row">
+            <select class="catalog-group-select" value="@selectedGroup" @onchange="OnSelectedGroupChanged">
+                <option value="">Todos los grupos musculares (@Ejercicios.Count)</option>
+                @foreach (var grp in AvailableGroups)
+                {
+                    <option value="@grp">@grp (@GetGroupCount(grp) ejercicios)</option>
+                }
+            </select>
+
+            <button type="button"
+                    class="btn-expand-collapse-all"
+                    @onclick="ToggleAllGroups"
+                    title="@(AreAllExpanded ? "Contraer todos los grupos" : "Desplegar todos los grupos")">
+                <i class="bi @(AreAllExpanded ? "bi-arrows-collapse" : "bi-arrows-expand")"></i>
+                @(AreAllExpanded ? "Contraer" : "Desplegar")
+            </button>
+        </div>
+    </div>
+
+    <div class="catalog-items-scroll">
+        @foreach (var group in GroupedFilteredExercises)
+        {
+            bool isExpanded = IsGroupExpanded(group.Key);
+            <div class="catalog-group-block @(isExpanded ? "expanded" : "collapsed")" @key="group.Key">
+                <button type="button"
+                        class="catalog-group-header"
+                        @onclick="() => ToggleGroupDropdown(group.Key)"
+                        title="Haz clic para desplegar u ocultar los ejercicios de @group.Key">
+                    <span class="group-header-left">
+                        <i class="bi @(isExpanded ? "bi-chevron-down" : "bi-chevron-right") group-chevron"></i>
+                        <i class="bi bi-layers-fill"></i>
+                        <span>@group.Key</span>
+                    </span>
+                    <span class="catalog-group-badge">@group.Count()</span>
+                </button>
+
+                @if (isExpanded)
+                {
+                    <div class="catalog-group-grid">
+                        @foreach (var ej in group)
+                        {
+                            <div class="catalog-card" @key="ej.Id">
+                                @if (!string.IsNullOrWhiteSpace(ej.RutaImagen))
+                                {
+                                    <img src="@ImageHelper.GetImageSrc(ej.RutaImagen)"
+                                         alt="@ej.Nombre"
+                                         class="catalog-card-img"
+                                         onerror="this.style.display='none'" />
+                                }
+                                else
+                                {
+                                    <div class="catalog-card-placeholder">
+                                        <i class="bi bi-lightning-charge-fill"></i>
+                                    </div>
+                                }
+
+                                <div class="catalog-card-body">
+                                    <div class="catalog-card-name" title="@ej.Nombre">@ej.Nombre</div>
+                                    <div class="catalog-card-meta">
+                                        <span class="catalog-card-tag">@ej.GrupoMuscular</span>
+                                        @if (!string.IsNullOrWhiteSpace(ej.UrlExplicacion))
+                                        {
+                                            <a href="@GetNavUrl(ej.UrlExplicacion)" target="_blank" class="catalog-card-link" title="Abrir video">
+                                                <i class="bi bi-link-45deg"></i> Video
+                                            </a>
+                                        }
+                                    </div>
+                                </div>
+
+                                <div class="catalog-card-actions">
+                                    <button type="button"
+                                            class="btn-card-quick-add"
+                                            title="Insertar este ejercicio en el día activo"
+                                            @onclick="() => OnQuickSelectExercise.InvokeAsync(ej)">
+                                        <i class="bi bi-plus-lg"></i>
+                                    </button>
+                                    <button type="button"
+                                            class="btn-card-edit"
+                                            title="Modificar ejercicio"
+                                            @onclick="() => StartEdit(ej)">
+                                        <i class="bi bi-pencil-fill"></i>
+                                    </button>
+                                    <button type="button"
+                                            class="btn-card-delete"
+                                            title="Eliminar ejercicio"
+                                            @onclick="() => DeleteExercise(ej.Id)">
+                                        <i class="bi bi-trash3-fill"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public List<Ejercicio> Ejercicios { get; set; } = new();
+    [Parameter] public EventCallback OnCatalogUpdated { get; set; }
+    [Parameter] public EventCallback<Ejercicio> OnQuickSelectExercise { get; set; }
+
+    private string searchQuery = string.Empty;
+    private string selectedGroup = string.Empty;
+    private bool showAddForm = false;
+    private int? editingExerciseId = null;
+
+    // Set of expanded muscle groups in the accordion dropdown list
+    private HashSet<string> expandedGroups = new(StringComparer.OrdinalIgnoreCase);
+
+    private string formName = string.Empty;
+    private string formGroup = "Pecho";
+    private string formCustomGroup = string.Empty;
+    private string formImage = string.Empty;
+    private string formUrl = string.Empty;
+
+    private readonly string[] PredefinedGroups = new[]
+    {
+        "Pecho",
+        "Espalda",
+        "Piernas",
+        "Hombros",
+        "Brazos",
+        "Core",
+        "Cuerpo Completo"
+    };
+
+    private IEnumerable<string> AvailableGroups =>
+        Ejercicios
+            .Select(e => string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g);
+
+    private bool AreAllExpanded =>
+        AvailableGroups.Any() && AvailableGroups.All(g => expandedGroups.Contains(g));
+
+    private bool IsGroupExpanded(string groupName)
+    {
+        if (!string.IsNullOrWhiteSpace(searchQuery) || !string.IsNullOrWhiteSpace(selectedGroup))
+        {
+            return true;
+        }
+        return expandedGroups.Contains(groupName);
+    }
+
+    private void ToggleGroupDropdown(string groupName)
+    {
+        if (expandedGroups.Contains(groupName))
+        {
+            expandedGroups.Remove(groupName);
+        }
+        else
+        {
+            expandedGroups.Add(groupName);
+        }
+    }
+
+    private void ToggleAllGroups()
+    {
+        if (AreAllExpanded)
+        {
+            expandedGroups.Clear();
+        }
+        else
+        {
+            foreach (var grp in AvailableGroups)
+            {
+                expandedGroups.Add(grp);
+            }
+        }
+    }
+
+    private void OnSelectedGroupChanged(ChangeEventArgs e)
+    {
+        selectedGroup = e.Value?.ToString() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(selectedGroup))
+        {
+            expandedGroups.Add(selectedGroup);
+        }
+    }
+
+    private int GetGroupCount(string group) =>
+        Ejercicios.Count(e => (string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+            .Equals(group, StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<IGrouping<string, Ejercicio>> GroupedFilteredExercises
+    {
+        get
+        {
+            var query = Ejercicios.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                query = query.Where(e =>
+                    e.Nombre.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    e.GrupoMuscular.Contains(searchQuery, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedGroup))
+            {
+                query = query.Where(e =>
+                    (string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+                    .Equals(selectedGroup, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return query
+                .GroupBy(e => string.IsNullOrWhiteSpace(e.GrupoMuscular) ? "General" : e.GrupoMuscular)
+                .OrderBy(g => g.Key);
+        }
+    }
+
+    private void ToggleAddForm()
+    {
+        if (showAddForm)
+        {
+            CancelForm();
+        }
+        else
+        {
+            editingExerciseId = null;
+            formName = string.Empty;
+            formGroup = "Pecho";
+            formCustomGroup = string.Empty;
+            formImage = string.Empty;
+            formUrl = string.Empty;
+            showAddForm = true;
+        }
+    }
+
+    private void StartEdit(Ejercicio ej)
+    {
+        showAddForm = false;
+        editingExerciseId = ej.Id;
+        formName = ej.Nombre;
+        if (PredefinedGroups.Contains(ej.GrupoMuscular))
+        {
+            formGroup = ej.GrupoMuscular;
+            formCustomGroup = string.Empty;
+        }
+        else
+        {
+            formGroup = "Otro";
+            formCustomGroup = ej.GrupoMuscular;
+        }
+        formImage = ej.RutaImagen ?? string.Empty;
+        formUrl = ej.UrlExplicacion ?? string.Empty;
+    }
+
+    private void CancelForm()
+    {
+        showAddForm = false;
+        editingExerciseId = null;
+        formName = string.Empty;
+        formGroup = "Pecho";
+        formCustomGroup = string.Empty;
+        formImage = string.Empty;
+        formUrl = string.Empty;
+    }
+
+    private async Task PickImageAsync()
+    {
+        var base64 = await ImageHelper.PickImageAsBase64Async();
+        if (!string.IsNullOrEmpty(base64))
+        {
+            formImage = base64;
+        }
+    }
+
+    private async Task HandleFileInputAsync(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+            if (file != null)
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                string contentType = string.IsNullOrWhiteSpace(file.ContentType) ? "image/jpeg" : file.ContentType;
+                formImage = $"data:{contentType};base64,{Convert.ToBase64String(ms.ToArray())}";
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task SaveExercise()
+    {
+        if (string.IsNullOrWhiteSpace(formName)) return;
+
+        string finalGroup = formGroup == "Otro"
+            ? (string.IsNullOrWhiteSpace(formCustomGroup) ? "General" : formCustomGroup.Trim())
+            : formGroup;
+
+        if (editingExerciseId.HasValue)
+        {
+            var existing = DbContext.Ejercicios.Find(editingExerciseId.Value);
+            if (existing != null)
+            {
+                existing.Nombre = formName.Trim();
+                existing.GrupoMuscular = finalGroup;
+                existing.RutaImagen = formImage?.Trim() ?? string.Empty;
+                existing.UrlExplicacion = formUrl?.Trim() ?? string.Empty;
+                DbContext.SaveChanges();
+
+                foreach (var item in RoutineState.RoutineItems.Where(i => i.EjercicioId == existing.Id))
+                {
+                    item.Ejercicio = existing;
+                }
+            }
+        }
+        else
+        {
+            var created = new Ejercicio
+            {
+                Nombre = formName.Trim(),
+                GrupoMuscular = finalGroup,
+                RutaImagen = formImage?.Trim() ?? string.Empty,
+                UrlExplicacion = formUrl?.Trim() ?? string.Empty
+            };
+            DbContext.Ejercicios.Add(created);
+            DbContext.SaveChanges();
+        }
+
+        expandedGroups.Add(finalGroup);
+        CancelForm();
+        await OnCatalogUpdated.InvokeAsync();
+        RoutineState.NotifyChanged();
+    }
+
+    private async Task DeleteExercise(int id)
+    {
+        var existing = DbContext.Ejercicios.Find(id);
+        if (existing != null)
+        {
+            DbContext.Ejercicios.Remove(existing);
+            DbContext.SaveChanges();
+            if (editingExerciseId == id)
+            {
+                CancelForm();
+            }
+            await OnCatalogUpdated.InvokeAsync();
+        }
+    }
+
+    private static string GetNavUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "#";
+        var trimmed = url.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+        return $"https://{trimmed}";
+    }
+}

@@ -1,0 +1,37 @@
+@using proyectoejercicios.Services
+@using proyectoejercicios.Models
+@inject RoutineBuilderState RoutineState
+@implements IDisposable
+
+<div class="routine-board @(!string.IsNullOrWhiteSpace(SelectedDiaId) ? "single-day-view" : "")">
+    @foreach (var dia in FilteredDias)
+    {
+        <DayColumn @key="dia.Id" Dia="dia" IsSingleDayMode="@(!string.IsNullOrWhiteSpace(SelectedDiaId))" />
+    }
+    
+    @if (string.IsNullOrWhiteSpace(SelectedDiaId))
+    {
+        <div class="add-day-container">
+            <button type="button" class="add-day-btn" @onclick="() => RoutineState.AddDay()"><i class="bi bi-plus-circle-fill"></i> Agregar Día</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string SelectedDiaId { get; set; } = "";
+
+    private IEnumerable<DiaRutina> FilteredDias =>
+        string.IsNullOrWhiteSpace(SelectedDiaId)
+            ? RoutineState.Dias
+            : RoutineState.Dias.Where(d => d.Id == SelectedDiaId);
+
+    protected override void OnInitialized()
+    {
+        RoutineState.OnStateChanged += StateHasChanged;
+    }
+
+    public void Dispose()
+    {
+        RoutineState.OnStateChanged -= StateHasChanged;
+    }
+}
